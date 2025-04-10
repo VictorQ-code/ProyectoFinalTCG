@@ -141,21 +141,4 @@ Visualizaciones interactivas sobre:
 - 🔄 **concurrent.futures**
 - ⚙️ **WebDriverWait**, **Regex**, **ast.literal_eval**
 
----
 
-## 📜 Licencia
-
-Este proyecto está disponible para uso libre con fines educativos e investigación.
-
----
-
-## 🤝 Cómo Contribuir
-
-Cualquier contribución es bienvenida mediante:
-
-- Creación de un **issue**.
-- Realización de un **pull request**.
-
----
-
-🎉 **¡Gracias por visitar y colaborar en el Proyecto Mapache!** 🚀🦝
