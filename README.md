@@ -1,4 +1,4 @@
-# 🦝 Proyecto "Mapache" – Scraping y Análisis de Cartas Pokémon TCG 📊✨
+# 🦝 Proyecto Scraping y Análisis de Cartas Pokémon TCG 
 
 Este proyecto se centra en la extracción automatizada, optimización y análisis visual interactivo de datos sobre cartas Pokémon TCG, utilizando un bot conocido como **Mapache**, desarrollado con Selenium y técnicas avanzadas de paralelización.
 
@@ -42,11 +42,6 @@ El CSV inicial debe contener los siguientes campos esenciales:
 - Se separan cartas con sets válidos e inválidos.
 - Se ordenan siguiendo el diccionario `cardmarket_set_map`.
 
-```python
-df = pd.read_csv('pokemon_tcg_full_data.csv')
-df.columns = df.columns.str.lower()
-df = df[df['name'].notna() & df['set'].notna() & df['localid'].notna()]
-```
 
 ---
 
