@@ -1,0 +1,16 @@
+# Entorno virtual
+venv/
+*.venv/
+
+# Secretos de Streamlit (¡MUY IMPORTANTE!)
+.streamlit/
+
+# Archivos compilados de Python y caché
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Otros (dependiendo de tu SO o editor)
+.DS_Store
+*.env
