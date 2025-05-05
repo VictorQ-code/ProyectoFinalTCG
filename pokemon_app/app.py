@@ -11,30 +11,59 @@ st.set_page_config(layout="wide", page_title="Pokémon TCG Explorer")
 logging.basicConfig(level=logging.INFO)
 
 # --- Constantes y Configuración de GCP ---
-GCP_PROJECT_ID = st.secrets["gcp_service_account"]["project_id"]
-BIGQUERY_DATASET = "pokemon_dataset"
+# Intenta obtener el project_id de los secrets, maneja el posible KeyError
+try:
+    GCP_PROJECT_ID = st.secrets["gcp_service_account"]["project_id"]
+except KeyError:
+    st.error("Error: 'project_id' no encontrado en los secrets de Streamlit ([gcp_service_account]). Verifica tu configuración.")
+    st.stop()
+except Exception as e:
+    st.error(f"Error inesperado al leer secrets: {e}")
+    st.stop()
+
+
+BIGQUERY_DATASET = "pokemon_dataset" # Asegúrate que este es el nombre correcto de tu dataset
 CARD_METADATA_TABLE = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.card_metadata"
-# Asume que tu modelo BQML está en el mismo dataset
-BQML_MODEL_NAME = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.mlp_price_predictor"
+# Asume que tu modelo BQML está en el mismo dataset (ajusta si es necesario)
+# BQML_MODEL_NAME = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.mlp_price_predictor" # Comentado si no se usa
 # Opcional: Endpoint del microservicio de predicción
-# PREDICTION_API_ENDPOINT = "URL_DE_TU_ENDPOINT_CLOUDRUN"
+# PREDICTION_API_ENDPOINT = "URL_DE_TU_ENDPOINT_CLOUDRUN" # Comentado si no se usa
+
 
 # --- Conexión Segura a BigQuery ---
 @st.cache_resource # Cachea el recurso de conexión
 def connect_to_bigquery():
     """Establece una conexión segura con BigQuery usando Service Account."""
     try:
+        # Verifica si los secrets están cargados
+        if "gcp_service_account" not in st.secrets:
+            st.error("Error: Sección [gcp_service_account] no encontrada en los secrets de Streamlit.")
+            return None # Devuelve None para indicar fallo
+
         creds_json = dict(st.secrets["gcp_service_account"])
+
+        # Verifica campos esenciales antes de crear credenciales
+        required_keys = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id"]
+        missing_keys = [key for key in required_keys if key not in creds_json or not creds_json[key]]
+        if missing_keys:
+             st.error(f"Error: Faltan claves en los secrets de [gcp_service_account]: {', '.join(missing_keys)}")
+             return None # Devuelve None para indicar fallo
+
         creds = service_account.Credentials.from_service_account_info(creds_json)
         client = bigquery.Client(credentials=creds, project=GCP_PROJECT_ID)
         logging.info("Conexión a BigQuery establecida correctamente.")
         return client
     except Exception as e:
-        st.error(f"Error al conectar con BigQuery: {e}")
+        st.error(f"Error al conectar con BigQuery: {e}. Verifica el formato y contenido de tus secrets.")
         logging.error(f"Error al conectar con BigQuery: {e}", exc_info=True)
-        st.stop() # Detiene la ejecución si no se puede conectar
+        return None # Devuelve None para indicar fallo
 
 bq_client = connect_to_bigquery()
+
+# Detiene la ejecución si la conexión falló
+if bq_client is None:
+    st.stop()
+
 
 # --- Funciones Auxiliares para Consultas ---
 
@@ -43,7 +72,7 @@ def get_latest_snapshot_table(_client: bigquery.Client) -> str | None:
     """Encuentra la tabla de snapshot mensual más reciente."""
     query = f"""
         SELECT table_id
-        FROM `{BIGQUERY_DATASET}.__TABLES__`
+        FROM `{GCP_PROJECT_ID}.{BIGQUERY_DATASET}`.__TABLES__
         WHERE STARTS_WITH(table_id, 'monthly_')
         ORDER BY table_id DESC
         LIMIT 1
@@ -51,30 +80,37 @@ def get_latest_snapshot_table(_client: bigquery.Client) -> str | None:
     try:
         results = _client.query(query).result()
         if results.total_rows > 0:
-            latest_table = list(results)[0].table_id
-            logging.info(f"Tabla de snapshot más reciente encontrada: {latest_table}")
-            return f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{latest_table}"
+            latest_table_id = list(results)[0].table_id
+            latest_table_full_path = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{latest_table_id}"
+            logging.info(f"Tabla de snapshot más reciente encontrada: {latest_table_full_path}")
+            return latest_table_full_path
         else:
-            logging.warning("No se encontraron tablas de snapshot mensuales ('monthly_YYYY_MM_DD').")
+            logging.warning(f"No se encontraron tablas de snapshot mensuales ('monthly_YYYY_MM_DD') en el dataset {BIGQUERY_DATASET}.")
+            st.warning(f"No se encontraron tablas de precios mensuales ('monthly_...') en el dataset '{BIGQUERY_DATASET}'.")
             return None
     except Exception as e:
-        st.error(f"Error al buscar la tabla de snapshot más reciente: {e}")
+        st.error(f"Error al buscar la tabla de snapshot más reciente: {e}. ¿Tiene la cuenta de servicio permisos para ver metadatos?")
         logging.error(f"Error al buscar la tabla de snapshot más reciente: {e}", exc_info=True)
         return None
 
 @st.cache_data(ttl=3600) # Cachea los resultados por 1 hora
 def get_distinct_values(_client: bigquery.Client, column_name: str) -> list:
     """Obtiene valores distintos para un campo de la tabla de metadatos."""
-    query = f"SELECT DISTINCT {column_name} FROM `{CARD_METADATA_TABLE}` ORDER BY {column_name}"
+    query = f"SELECT DISTINCT {column_name} FROM `{CARD_METADATA_TABLE}` WHERE {column_name} IS NOT NULL ORDER BY {column_name}"
     try:
         results = _client.query(query).to_dataframe()
-        return results[column_name].dropna().tolist()
+        return results[column_name].tolist()
     except Exception as e:
-        st.error(f"Error al obtener valores distintos para {column_name}: {e}")
-        logging.error(f"Error al obtener valores distintos para {column_name}: {e}", exc_info=True)
-        return []
+         # Verifica específicamente el error de db-dtypes
+        if "db-dtypes" in str(e):
+             st.error(f"Error al obtener valores para '{column_name}': Falta el paquete 'db-dtypes'. Añádelo a tu requirements.txt y reinicia.")
+             logging.error("Error de dependencia: db-dtypes no encontrado al obtener valores distintos.", exc_info=True)
+        else:
+            st.error(f"Error al obtener valores distintos para '{column_name}' desde '{CARD_METADATA_TABLE}': {e}. Verifica el nombre de la tabla y la columna.")
+            logging.error(f"Error al obtener valores distintos para {column_name}: {e}", exc_info=True)
+        return [] # Retorna lista vacía en caso de error
 
-# --- Obtener la tabla más reciente ---
+# --- Obtener la tabla más reciente y detener si no se encuentra ---
 LATEST_SNAPSHOT_TABLE = get_latest_snapshot_table(bq_client)
 if not LATEST_SNAPSHOT_TABLE:
     st.error("No se pudo determinar la tabla de precios más reciente. La aplicación no puede continuar.")
@@ -97,34 +133,36 @@ selected_pokemons = st.sidebar.multiselect("Filtrar por Pokémon:", pokemon_opti
 selected_rarities = st.sidebar.multiselect("Filtrar por Rareza:", rarity_options)
 
 # Widget de ordenamiento
-sort_order = st.sidebar.radio("Ordenar por Precio:", ("Ascendente", "Descendente"), index=1)
+sort_order = st.sidebar.radio("Ordenar por Precio (Trend):", ("Ascendente", "Descendente"), index=1)
 sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 
 # --- Construcción y Ejecución de la Consulta Principal ---
 @st.cache_data(ttl=600) # Cachea los datos filtrados por 10 minutos
 def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pokemons: list, rarities: list, sort: str) -> pd.DataFrame:
     """Construye y ejecuta la consulta dinámica para obtener datos de cartas."""
+    # Nombres de columna corregidos: id, images_large, cm_trendPrice
+    # Alias usados: image_url, price
     base_query = f"""
     SELECT
-        c.card_id,
+        c.id,                   # Identificador único
         c.name AS pokemon_name,
         c.set_name,
         c.rarity,
         c.artist,
-        c.image_url,
-        p.price
+        c.images_large AS image_url, # URL de la imagen (usando alias)
+        p.cm_trendPrice AS price    # Precio a usar (usando alias) - CAMBIA cm_trendPrice si prefieres otro
     FROM
         `{CARD_METADATA_TABLE}` AS c
     JOIN
-        `{latest_table}` AS p ON c.card_id = p.card_id
+        `{latest_table}` AS p ON c.id = p.id # Une usando la columna 'id'
     WHERE 1=1
     """
 
-    # Añadir filtros dinámicamente y preparar parámetros
     params = []
     param_types = []
     filter_clauses = []
 
+    # Añadir filtros dinámicamente
     if sets:
         filter_clauses.append("c.set_name IN UNNEST(@sets)")
         params.append(bigquery.ArrayQueryParameter("sets", "STRING", sets))
@@ -138,8 +176,8 @@ def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pok
     if filter_clauses:
         base_query += " AND " + " AND ".join(filter_clauses)
 
-    # Añadir ordenamiento
-    base_query += f" ORDER BY p.price {sort}"
+    # Añadir ordenamiento por el alias 'price'
+    base_query += f" ORDER BY price {sort}"
 
     # Configurar la consulta parametrizada
     job_config = bigquery.QueryJobConfig(query_parameters=params)
@@ -149,11 +187,18 @@ def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pok
     try:
         query_job = _client.query(base_query, job_config=job_config)
         results_df = query_job.to_dataframe()
+        # Convierte la columna de precio a numérico, errores a NaN
+        results_df['price'] = pd.to_numeric(results_df['price'], errors='coerce')
         logging.info(f"Consulta ejecutada. Se obtuvieron {len(results_df)} filas.")
         return results_df
     except Exception as e:
-        st.error(f"Error al ejecutar la consulta principal: {e}")
-        logging.error(f"Error al ejecutar la consulta principal: {e}", exc_info=True)
+         # Verifica específicamente el error de db-dtypes
+        if "db-dtypes" in str(e):
+             st.error("Error: Falta la librería 'db-dtypes'. Asegúrate de que esté en requirements.txt y reinicia la app.")
+             logging.error("Error de dependencia: db-dtypes no encontrado al ejecutar consulta.", exc_info=True)
+        else:
+            st.error(f"Error al ejecutar la consulta principal: {e}. Revisa los nombres de columna y tablas en la consulta.")
+            logging.error(f"Error al ejecutar la consulta principal: {e}", exc_info=True)
         return pd.DataFrame() # Retorna DataFrame vacío en caso de error
 
 # Ejecutar la consulta con los filtros actuales
@@ -170,142 +215,120 @@ results_df = fetch_card_data(
 st.header("Resultados")
 
 if not results_df.empty:
-    st.dataframe(results_df, use_container_width=True)
+    # Prepara el DataFrame para mostrar: selecciona columnas y renombra
+    display_columns = {
+        'id': 'ID',
+        'pokemon_name': 'Pokémon',
+        'set_name': 'Set',
+        'rarity': 'Rareza',
+        'artist': 'Artista',
+        'price': 'Precio (Trend €)' # Ajusta la etiqueta si usaste otro precio
+    }
+    # Filtra solo las columnas que existen en results_df para evitar errores
+    columns_to_display = [col for col in display_columns.keys() if col in results_df.columns]
+    display_df = results_df[columns_to_display].copy()
+    display_df.rename(columns=display_columns, inplace=True)
+
+    # Formatea la columna de precio para mostrar con símbolo y decimales
+    if 'Precio (Trend €)' in display_df.columns:
+         display_df['Precio (Trend €)'] = display_df['Precio (Trend €)'].apply(lambda x: f"€{x:.2f}" if pd.notna(x) else "N/A")
+
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     st.divider()
     st.header("Detalle de Carta")
 
-    # Selector para elegir una carta de los resultados
-    card_options = results_df['pokemon_name'] + " (" + results_df['card_id'] + ")"
+    # Usa la columna 'id' del DataFrame original results_df para generar opciones
+    card_options = results_df['pokemon_name'] + " (" + results_df['id'] + ")"
     selected_card_display = st.selectbox("Selecciona una carta para ver detalles:", options=card_options)
 
     if selected_card_display:
-        # Extraer card_id del string seleccionado
-        selected_card_id = selected_card_display[selected_card_display.rfind("(")+1:selected_card_display.rfind(")")]
+        # Extrae el 'id' del string seleccionado
+        selected_card_id_str = selected_card_display[selected_card_display.rfind("(")+1:selected_card_display.rfind(")")]
 
-        # Encontrar los datos de la carta seleccionada en el DataFrame
-        card_details = results_df[results_df['card_id'] == selected_card_id].iloc[0]
+        # Busca la fila completa en el DataFrame original usando el 'id'
+        card_details = results_df[results_df['id'] == selected_card_id_str].iloc[0]
 
         col1, col2 = st.columns([1, 2]) # Columna para imagen, columna para texto
 
         with col1:
+            # Usa la columna 'image_url' (alias de images_large)
             if pd.notna(card_details['image_url']):
-                st.image(card_details['image_url'], caption=f"{card_details['pokemon_name']} - {card_details['set_name']}", width=250)
+                st.image(card_details['image_url'], caption=f"{card_details['pokemon_name']} - {card_details['set_name']}", width=300) # Ancho aumentado
             else:
                 st.warning("Imagen no disponible.")
 
         with col2:
             st.subheader(f"{card_details['pokemon_name']}")
-            st.markdown(f"**ID:** `{card_details['card_id']}`")
+            st.markdown(f"**ID:** `{card_details['id']}`") # Muestra el 'id'
             st.markdown(f"**Set:** {card_details['set_name']}")
             st.markdown(f"**Rareza:** {card_details['rarity']}")
-            st.markdown(f"**Artista:** {card_details['artist']}")
-            st.metric(label="Precio Actual (USD)", value=f"${card_details['price']:.2f}" if pd.notna(card_details['price']) else "N/A")
+            # Muestra el artista solo si no es nulo/vacío
+            if pd.notna(card_details['artist']) and card_details['artist']:
+                 st.markdown(f"**Artista:** {card_details['artist']}")
+            # Usa la columna 'price' (alias de cm_trendPrice) para la métrica
+            st.metric(label="Precio (Trend €)", value=f"€{card_details['price']:.2f}" if pd.notna(card_details['price']) else "N/A")
+
 
             # --- (Opcional) Integración con Predicción de Precios ---
-            st.subheader("Predicción de Precio (Próximo Mes)")
+            # ¡IMPORTANTE! Si activas esto, debes asegurarte de que tu modelo
+            # BQML o API use las columnas correctas ('id', 'cm_trendPrice', etc.)
+            # y que la consulta ML.PREDICT esté adaptada.
 
-            # Botón para activar la predicción
-            if st.button("Predecir Precio Futuro"):
-                # -- Opción 1: Usando BigQuery ML --
-                @st.cache_data(ttl=600)
-                def get_price_prediction_bqml(_client: bigquery.Client, model_name: str, card_id: str) -> float | None:
-                    """Obtiene la predicción de precio usando un modelo BQML."""
-                    # Nota: Esta consulta es un EJEMPLO. Debe adaptarse EXACTAMENTE
-                    # a las características que espera tu modelo BQML 'mlp_price_predictor'.
-                    # Necesitarás probablemente unir con la tabla anterior para price_t0_log y days_diff.
-                    # Asumimos que el modelo necesita el card_id y busca internamente las features.
-                    # O podrías pasar todas las features requeridas explícitamente.
+            # st.subheader("Predicción de Precio (Próximo Mes) [Opcional]")
+            # if st.button("Predecir Precio Futuro"):
+            #     # -- Opción 1: Usando BigQuery ML --
+            #     @st.cache_data(ttl=600)
+            #     def get_price_prediction_bqml(_client: bigquery.Client, model_name: str, card_identifier: str) -> float | None:
+            #         """Obtiene la predicción de precio usando un modelo BQML."""
+            #         # ¡ESTA CONSULTA DEBE SER ADAPTADA A TU MODELO REAL!
+            #         # Necesitará las features exactas que el modelo espera.
+            #         # Probablemente requiera unir tabla actual y anterior.
+            #         predict_query = f"""
+            #         SELECT predicted_price # Ajusta el nombre de la columna predicha
+            #         FROM ML.PREDICT(MODEL `{model_name}`,
+            #             (
+            #             -- Aquí necesitas construir las features EXACTAS para tu modelo
+            #             -- Ejemplo MUY simplificado:
+            #             SELECT
+            #                 c.* EXCEPT(id), -- Excluye id si no lo usa el modelo
+            #                 p.cm_trendPrice,
+            #                 LOG(p.cm_trendPrice) as price_t0_log_placeholder, -- Ejemplo
+            #                 30 as days_diff_placeholder -- Ejemplo
+            #             FROM `{CARD_METADATA_TABLE}` c
+            #             JOIN `{LATEST_SNAPSHOT_TABLE}` p ON c.id = p.id -- Usa 'id'
+            #             WHERE c.id = @card_identifier -- Usa 'id'
+            #             )
+            #         )
+            #         """
+            #         params = [bigquery.ScalarQueryParameter("card_identifier", "STRING", card_identifier)]
+            #         job_config = bigquery.QueryJobConfig(query_parameters=params)
+            #         try:
+            #             pred_job = _client.query(predict_query, job_config=job_config)
+            #             pred_results = pred_job.to_dataframe()
+            #             if not pred_results.empty:
+            #                 # Ajusta según lo que prediga el modelo (log, valor directo, etc.)
+            #                 predicted_value = pred_results.iloc[0, 0] # Obtiene la primera columna predicha
+            #                 # Podría necesitarse: predicted_price = np.exp(predicted_value)
+            #                 logging.info(f"Predicción BQML para {card_identifier}: {predicted_value}")
+            #                 return predicted_value
+            #             else: return None
+            #         except Exception as e:
+            #             st.error(f"Error al obtener predicción de BQML: {e}")
+            #             logging.error(f"Error BQML para {card_identifier}: {e}", exc_info=True)
+            #             return None
 
-                    # Ejemplo simplificado (¡AJUSTAR A TU MODELO REAL!):
-                    # Supongamos que el modelo sólo necesita el precio actual y metadatos.
-                    # Necesitarías una query que prepare las features exactamente como espera el modelo.
-                    # Esto podría involucrar unir la tabla actual y la anterior.
-                    # Aquí un ejemplo MUY simplificado asumiendo que el modelo
-                    # puede inferir todo desde el card_id y el último precio.
-                    predict_query = f"""
-                    SELECT predicted_price
-                    FROM ML.PREDICT(MODEL `{model_name}`,
-                        (
-                        SELECT
-                            c.*, -- Todas las columnas de metadatos
-                            p.price,
-                            -- Aquí necesitarías calcular price_t0_log, days_diff, etc.
-                            -- uniéndote con la tabla de snapshot anterior.
-                            -- Por simplicidad, omitimos esto aquí. ¡DEBES AGREGARLO!
-                            LOG(p.price) as price_t0_log_placeholder, -- ¡EJEMPLO!
-                            30 as days_diff_placeholder -- ¡EJEMPLO!
-                        FROM `{CARD_METADATA_TABLE}` c
-                        JOIN `{LATEST_SNAPSHOT_TABLE}` p ON c.card_id = p.card_id
-                        WHERE c.card_id = @card_id
-                        )
-                    )
-                    """
-                    params = [bigquery.ScalarQueryParameter("card_id", "STRING", card_id)]
-                    job_config = bigquery.QueryJobConfig(query_parameters=params)
-
-                    try:
-                        pred_job = _client.query(predict_query, job_config=job_config)
-                        pred_results = pred_job.to_dataframe()
-                        if not pred_results.empty:
-                            # BQML a menudo predice el log del precio, así que podríamos necesitar exp()
-                            # Ajusta según cómo entrenaste tu modelo.
-                            # Asumimos que 'predicted_price' es el nombre del campo de salida.
-                            predicted_value = pred_results['predicted_price'].iloc[0]
-                            # Podría necesitarse: predicted_price = np.exp(predicted_value)
-                            logging.info(f"Predicción BQML para {card_id}: {predicted_value}")
-                            return predicted_value
-                        else:
-                            logging.warning(f"BQML no devolvió predicción para {card_id}.")
-                            return None
-                    except Exception as e:
-                        st.error(f"Error al obtener predicción de BQML: {e}")
-                        logging.error(f"Error al obtener predicción de BQML para {card_id}: {e}", exc_info=True)
-                        return None
-
-                predicted_price = get_price_prediction_bqml(bq_client, BQML_MODEL_NAME, selected_card_id)
-
-                if predicted_price is not None:
-                     # Asumiendo que la predicción es directa (ajustar si es log, etc.)
-                    st.metric(label="Precio Predicho (Próximo Mes)", value=f"${predicted_price:.2f}")
-                else:
-                    st.warning("No se pudo obtener la predicción de precio.")
+            #     predicted_price = get_price_prediction_bqml(bq_client, BQML_MODEL_NAME, selected_card_id_str)
+            #     if predicted_price is not None:
+            #         st.metric(label="Precio Predicho (Próximo Mes)", value=f"€{predicted_price:.2f}") # Ajusta formato/moneda
+            #     else:
+            #         st.warning("No se pudo obtener la predicción de precio.")
 
                 # -- Opción 2: Llamando a un Microservicio (Cloud Run) --
-                # import requests
-                # @st.cache_data(ttl=600)
-                # def get_price_prediction_api(card_data: pd.Series) -> float | None:
-                #     """Llama a la API de predicción externa."""
-                #     # 1. Preparar los datos de entrada para la API
-                #     #    Necesitarás obtener price_t0_log, days_diff y las features
-                #     #    one-hot codificadas. Esto podría requerir otra consulta a BQ.
-                #     features_for_api = {
-                #         "price_t0_log": ..., # Calcular o buscar
-                #         "days_diff": ...,    # Calcular o buscar
-                #         "rarity": card_data['rarity'], # La API deberá hacer one-hot
-                #         "set_name": card_data['set_name'], # La API deberá hacer one-hot
-                #         # ... otras features ...
-                #     }
-                #     try:
-                #         response = requests.post(PREDICTION_API_ENDPOINT, json=features_for_api, timeout=10)
-                #         response.raise_for_status() # Lanza excepción si hay error HTTP
-                #         prediction = response.json().get("predicted_price")
-                #         logging.info(f"Predicción API para {card_data['card_id']}: {prediction}")
-                #         # Podría necesitarse np.exp(prediction) si la API devuelve log(precio)
-                #         return prediction
-                #     except requests.exceptions.RequestException as e:
-                #         st.error(f"Error al llamar a la API de predicción: {e}")
-                #         logging.error(f"Error al llamar a la API para {card_data['card_id']}: {e}", exc_info=True)
-                #         return None
-
-                # predicted_price_api = get_price_prediction_api(card_details)
-                # if predicted_price_api is not None:
-                #     st.metric(label="Precio Predicho (API)", value=f"${predicted_price_api:.2f}")
-                # else:
-                #     st.warning("No se pudo obtener la predicción de precio (API).")
+                # ... (Código para llamar a API externa, necesitaría ajuste similar de features) ...
 
 else:
-    st.info("No se encontraron cartas con los filtros seleccionados.")
+    # Mensaje si no hay resultados o si hubo error en la consulta
+    if LATEST_SNAPSHOT_TABLE: # Solo muestra si la búsqueda inicial de tabla fue exitosa
+        st.info("No se encontraron cartas con los filtros seleccionados o hubo un error al consultar los datos. Verifica los filtros o los logs.")
 
-# --- Footer opcional ---
-st.sidebar.info("Aplicación desarrollada por [Tu Nombre/Equipo]")
