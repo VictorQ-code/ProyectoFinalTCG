@@ -159,7 +159,7 @@ def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pok
     """
 
     params = []
-    param_types = []
+    # param_types = [] # Esta variable no se usa, se puede eliminar si no se necesita para algo más
     filter_clauses = []
 
     # Añadir filtros dinámicamente
@@ -182,7 +182,10 @@ def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pok
     # Configurar la consulta parametrizada
     job_config = bigquery.QueryJobConfig(query_parameters=params)
 
-    logging.info(f"Ejecutando consulta: {base_query} con parámetros: {[(p.name, p.array_values) for p in params]}")
+    # --- LÍNEA DE LOGGING CORREGIDA ---
+    param_names_types = [(p.name, p.type_) for p in params]
+    logging.info(f"Ejecutando consulta: {base_query} con parámetros (nombre, tipo): {param_names_types}")
+    # --- FIN DE LA CORRECCIÓN ---
 
     try:
         query_job = _client.query(base_query, job_config=job_config)
