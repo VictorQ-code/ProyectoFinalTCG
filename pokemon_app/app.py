@@ -146,7 +146,6 @@ sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 @st.cache_data(ttl=600) # Cachea los datos filtrados por 10 minutos
 def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pokemons: list, rarities: list, sort: str) -> pd.DataFrame:
     """Construye y ejecuta la consulta dinámica para obtener datos de cartas."""
-    # Nombres de columna basados en esquemas: id, images_large (como image_url), cm_trendPrice (como price)
     base_query = f"""
     SELECT
         c.id,
@@ -154,12 +153,12 @@ def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pok
         c.set_name,
         c.rarity,
         c.artist,
-        c.images_large AS image_url, # URL de la imagen
-        p.cm_trendPrice AS price    # Precio a usar (Cardmarket Trend Price)
+        c.images_large AS image_url,
+        p.cm_trendPrice AS price
     FROM
         `{CARD_METADATA_TABLE}` AS c
     JOIN
-        `{latest_table}` AS p ON c.id = p.id # Une usando la columna 'id'
+        `{latest_table}` AS p ON c.id = p.id
     WHERE 1=1
     """
 
@@ -179,25 +178,38 @@ def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pok
     if filter_clauses:
         base_query += " AND " + " AND ".join(filter_clauses)
 
-    base_query += f" ORDER BY price {sort}" # Ordena por el alias 'price'
+    base_query += f" ORDER BY price {sort}"
 
     job_config = bigquery.QueryJobConfig(query_parameters=params)
 
-    # Logging de parámetros corregido y mejorado
-    param_details = []
-    for p in params:
-        if isinstance(p, bigquery.ArrayQueryParameter):
-            param_details.append((p.name, f"ARRAY<{p.parameter_type.type_}>", p.values))
-        elif isinstance(p, bigquery.ScalarQueryParameter):
-            param_details.append((p.name, p.type_, p.value))
-        else:
-            param_details.append((p.name, "UNKNOWN_TYPE", "UNKNOWN_VALUE"))
-    logging.info(f"Ejecutando consulta: {base_query} con parámetros (nombre, tipo, valores): {param_details}")
+    # --- Logging de parámetros AÚN MÁS DEFENSIVO ---
+    param_details_str = "No parameters"
+    if params:
+        param_details_list = []
+        for p_idx, p_obj in enumerate(params):
+            p_name = getattr(p_obj, 'name', f'param_{p_idx}')
+            p_values_str = "N/A"
+            p_type_str = "UNKNOWN"
+
+            if isinstance(p_obj, bigquery.ArrayQueryParameter):
+                p_values_str = str(getattr(p_obj, 'values', "N/A"))
+                if hasattr(p_obj, 'parameter_type') and p_obj.parameter_type is not None and hasattr(p_obj.parameter_type, 'type_'):
+                    p_type_str = f"ARRAY<{p_obj.parameter_type.type_}>"
+                else:
+                    p_type_str = "ARRAY<UNKNOWN_ELEMENT_TYPE>"
+            elif isinstance(p_obj, bigquery.ScalarQueryParameter):
+                p_values_str = str(getattr(p_obj, 'value', "N/A"))
+                p_type_str = getattr(p_obj, 'type_', "UNKNOWN")
+            
+            param_details_list.append(f"({p_name}, {p_type_str}, values_preview='{p_values_str[:50]}{'...' if len(p_values_str) > 50 else ''}')")
+        param_details_str = "; ".join(param_details_list)
+    
+    logging.info(f"Ejecutando consulta: {base_query} con parámetros: {param_details_str}")
+    # --- FIN DE LA CORRECCIÓN DEFENSIVA ---
 
     try:
         query_job = _client.query(base_query, job_config=job_config)
         results_df = query_job.to_dataframe()
-        # Convierte la columna de precio a numérico, errores a NaN
         results_df['price'] = pd.to_numeric(results_df['price'], errors='coerce')
         logging.info(f"Consulta ejecutada. Se obtuvieron {len(results_df)} filas.")
         return results_df
@@ -208,7 +220,7 @@ def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pok
         else:
             st.error(f"Error al ejecutar la consulta principal: {e}. Revisa los nombres de columna, tablas y permisos.")
             logging.error(f"Error al ejecutar la consulta principal: {e}", exc_info=True)
-        return pd.DataFrame() # Retorna DataFrame vacío en caso de error
+        return pd.DataFrame()
 
 # Ejecutar la consulta con los filtros actuales (solo si bq_client es válido)
 if bq_client and LATEST_SNAPSHOT_TABLE: # LATEST_SNAPSHOT_TABLE también debe ser válido
