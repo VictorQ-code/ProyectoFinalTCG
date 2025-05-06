@@ -2,119 +2,100 @@ import streamlit as st
 import pandas as pd
 from google.cloud import bigquery
 from google.oauth2 import service_account
-import json # Aunque no se usa directamente, es bueno tenerlo si se trabaja con JSONs
+import re # Para expresiones regulares (limpieza de nombres)
 import logging
-from datetime import datetime # No se usa actualmente, pero puede ser útil para futuras expansiones
 
 # --- Configuración Inicial ---
 st.set_page_config(layout="wide", page_title="Pokémon TCG Explorer")
-logging.basicConfig(level=logging.INFO) # Configura el logging básico
+logging.basicConfig(level=logging.INFO)
 
 # --- Constantes y Configuración de GCP ---
-# Intenta obtener el project_id de los secrets, maneja el posible KeyError
 try:
     GCP_PROJECT_ID = st.secrets["gcp_service_account"]["project_id"]
 except KeyError:
-    st.error("Error: 'project_id' no encontrado en los secrets de Streamlit ([gcp_service_account]). Verifica tu configuración.")
+    st.error("Error: 'project_id' no encontrado en los secrets de Streamlit.")
     st.stop()
-except Exception as e: # Captura cualquier otra excepción al leer secrets
+except Exception as e:
     st.error(f"Error inesperado al leer secrets: {e}")
     st.stop()
 
-
-BIGQUERY_DATASET = "pokemon_dataset" # Asegúrate que este es el nombre correcto de tu dataset
+BIGQUERY_DATASET = "pokemon_dataset"
 CARD_METADATA_TABLE = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.card_metadata"
-# Asume que tu modelo BQML está en el mismo dataset (ajusta si es necesario)
-# BQML_MODEL_NAME = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.mlp_price_predictor" # Comentado si no se usa
-# Opcional: Endpoint del microservicio de predicción
-# PREDICTION_API_ENDPOINT = "URL_DE_TU_ENDPOINT_CLOUDRUN" # Comentado si no se usa
-
 
 # --- Conexión Segura a BigQuery ---
-@st.cache_resource # Cachea el recurso de conexión para eficiencia
+@st.cache_resource
 def connect_to_bigquery():
-    """Establece una conexión segura con BigQuery usando Service Account."""
     try:
-        # Verifica si la sección principal de secrets está cargada
         if "gcp_service_account" not in st.secrets:
-            st.error("Error: Sección [gcp_service_account] no encontrada en los secrets de Streamlit.")
-            return None # Devuelve None para indicar fallo
-
+            st.error("Error: Sección [gcp_service_account] no encontrada en los secrets.")
+            return None
         creds_json = dict(st.secrets["gcp_service_account"])
-
-        # Verifica campos esenciales antes de crear credenciales
         required_keys = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id"]
         missing_keys = [key for key in required_keys if key not in creds_json or not creds_json[key]]
         if missing_keys:
-             st.error(f"Error: Faltan claves esenciales en los secrets de [gcp_service_account]: {', '.join(missing_keys)}")
-             return None # Devuelve None para indicar fallo
-
+             st.error(f"Error: Faltan claves en [gcp_service_account]: {', '.join(missing_keys)}")
+             return None
         creds = service_account.Credentials.from_service_account_info(creds_json)
         client = bigquery.Client(credentials=creds, project=GCP_PROJECT_ID)
-        logging.info("Conexión a BigQuery establecida correctamente.")
+        logging.info("Conexión a BigQuery establecida.")
         return client
     except Exception as e:
-        st.error(f"Error al conectar con BigQuery: {e}. Verifica el formato y contenido de tus secrets.")
+        st.error(f"Error al conectar con BigQuery: {e}.")
         logging.error(f"Error al conectar con BigQuery: {e}", exc_info=True)
-        return None # Devuelve None para indicar fallo
+        return None
 
 bq_client = connect_to_bigquery()
-
-# Detiene la ejecución de la app si la conexión a BigQuery falló
 if bq_client is None:
     st.stop()
 
-
-# --- Funciones Auxiliares para Consultas ---
-
-@st.cache_data(ttl=3600) # Cachea los resultados por 1 hora
+# --- Funciones Auxiliares ---
+@st.cache_data(ttl=3600)
 def get_latest_snapshot_table(_client: bigquery.Client) -> str | None:
-    """Encuentra la tabla de snapshot mensual más reciente."""
-    # Usa el project_id y dataset directamente en la consulta INFORMATION_SCHEMA
-    query = f"""
-        SELECT table_id
-        FROM `{_client.project}.{BIGQUERY_DATASET}`.__TABLES__
-        WHERE STARTS_WITH(table_id, 'monthly_')
-        ORDER BY table_id DESC
-        LIMIT 1
-    """
+    query = f"SELECT table_id FROM `{_client.project}.{BIGQUERY_DATASET}`.__TABLES__ WHERE STARTS_WITH(table_id, 'monthly_') ORDER BY table_id DESC LIMIT 1"
     try:
         results = _client.query(query).result()
         if results.total_rows > 0:
             latest_table_id = list(results)[0].table_id
-            latest_table_full_path = f"{_client.project}.{BIGQUERY_DATASET}.{latest_table_id}"
-            logging.info(f"Tabla de snapshot más reciente encontrada: {latest_table_full_path}")
-            return latest_table_full_path
-        else:
-            logging.warning(f"No se encontraron tablas de snapshot mensuales ('monthly_YYYY_MM_DD') en el dataset {BIGQUERY_DATASET}.")
-            st.warning(f"No se encontraron tablas de precios mensuales ('monthly_...') en el dataset '{BIGQUERY_DATASET}'.")
-            return None
+            return f"{_client.project}.{BIGQUERY_DATASET}.{latest_table_id}"
+        st.warning(f"No se encontraron tablas 'monthly_...' en '{BIGQUERY_DATASET}'.")
+        return None
     except Exception as e:
-        st.error(f"Error al buscar la tabla de snapshot más reciente: {e}. ¿Tiene la cuenta de servicio permisos para ver metadatos (ej. `roles/bigquery.metadataViewer`) en el dataset '{BIGQUERY_DATASET}'?")
-        logging.error(f"Error al buscar la tabla de snapshot más reciente: {e}", exc_info=True)
+        st.error(f"Error buscando tabla snapshot: {e}.")
         return None
 
-@st.cache_data(ttl=3600) # Cachea los resultados por 1 hora
-def get_distinct_values(_client: bigquery.Client, column_name: str) -> list:
-    """Obtiene valores distintos para un campo de la tabla de metadatos."""
-    query = f"SELECT DISTINCT {column_name} FROM `{CARD_METADATA_TABLE}` WHERE {column_name} IS NOT NULL ORDER BY {column_name}"
+@st.cache_data(ttl=3600)
+def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
+    """Obtiene todos los metadatos y añade una columna 'base_pokemon_name'."""
+    query = f"SELECT id, name, supertype, subtypes, rarity, set_id, set_name, artist, images_large FROM `{CARD_METADATA_TABLE}`"
     try:
-        results = _client.query(query).to_dataframe()
-        return results[column_name].tolist()
-    except Exception as e:
-         # Verifica específicamente el error de db-dtypes
-        if "db-dtypes" in str(e).lower(): # Convertir a minúsculas para comparación robusta
-             st.error(f"Error al obtener valores para '{column_name}': Falta el paquete 'db-dtypes'. Añádelo a tu requirements.txt y reinicia.")
-             logging.error("Error de dependencia: db-dtypes no encontrado al obtener valores distintos.", exc_info=True)
-        else:
-            st.error(f"Error al obtener valores distintos para '{column_name}' desde '{CARD_METADATA_TABLE}': {e}. Verifica el nombre de la tabla, la columna y los permisos.")
-            logging.error(f"Error al obtener valores distintos para {column_name}: {e}", exc_info=True)
-        return [] # Retorna lista vacía en caso de error
+        df = _client.query(query).to_dataframe()
+        if df.empty:
+            st.warning("No se pudo cargar metadatos de cartas.")
+            return pd.DataFrame()
 
-# --- Obtener la tabla más reciente y detener si no se encuentra ---
+        # Heurística para el nombre base del Pokémon: primera palabra
+        # Podría necesitar mejoras para nombres compuestos como "Mr. Mime" o con guiones.
+        df['base_pokemon_name'] = df.apply(
+            lambda row: row['name'].split(' ')[0] if row['supertype'] == 'Pokémon' and pd.notna(row['name']) else None,
+            axis=1
+        )
+        # Para Entrenadores y Objetos (Energía), el "nombre base" es el nombre completo
+        df.loc[df['supertype'] != 'Pokémon', 'base_pokemon_name'] = df['name']
+
+        return df
+    except Exception as e:
+        if "db-dtypes" in str(e).lower():
+             st.error("Error: Falta 'db-dtypes'. Añádelo a requirements.txt.")
+        else:
+            st.error(f"Error al obtener metadatos de cartas: {e}.")
+        return pd.DataFrame()
+
+# --- Carga de Datos Inicial ---
 LATEST_SNAPSHOT_TABLE = get_latest_snapshot_table(bq_client)
-if not LATEST_SNAPSHOT_TABLE:
-    st.error("No se pudo determinar la tabla de precios más reciente. La aplicación no puede continuar.")
+all_card_metadata_df = get_card_metadata_with_base_names(bq_client)
+
+if not LATEST_SNAPSHOT_TABLE or all_card_metadata_df.empty:
+    st.error("No se pueden cargar datos esenciales. La aplicación no puede continuar.")
     st.stop()
 
 # --- Lógica Principal de la Aplicación Streamlit ---
@@ -123,89 +104,112 @@ st.title("Explorador de Cartas Pokémon TCG")
 # --- Barra Lateral: Filtros y Controles ---
 st.sidebar.header("Filtros y Opciones")
 
-# Cargar opciones para los filtros (cacheado)
-# Ejecutar solo si bq_client es válido (aunque ya se detiene arriba si es None)
-if bq_client:
-    set_options = get_distinct_values(bq_client, "set_name")
-    pokemon_options = get_distinct_values(bq_client, "name")
-    rarity_options = get_distinct_values(bq_client, "rarity")
-else: # Fallback si algo inesperado ocurre y bq_client es None aquí
-    set_options, pokemon_options, rarity_options = [], [], []
+# 1. Filtro por Supertype (Categoría Principal)
+supertype_options = sorted(all_card_metadata_df['supertype'].dropna().unique().tolist())
+selected_supertype = st.sidebar.selectbox("Selecciona Categoría:", ["Todos"] + supertype_options, index=0)
+
+# Filtrar metadata_df basado en supertype seleccionado
+if selected_supertype == "Todos":
+    filtered_metadata_by_supertype_df = all_card_metadata_df
+else:
+    filtered_metadata_by_supertype_df = all_card_metadata_df[all_card_metadata_df['supertype'] == selected_supertype]
 
 
-# Widgets de filtro
+# 2. Filtro por Set (basado en el supertype ya filtrado)
+set_options = sorted(filtered_metadata_by_supertype_df['set_name'].dropna().unique().tolist())
 selected_sets = st.sidebar.multiselect("Filtrar por Set:", set_options)
-selected_pokemons = st.sidebar.multiselect("Filtrar por Pokémon:", pokemon_options)
+
+
+# 3. Filtro por Nombre Base (Pokémon, Entrenador, Objeto)
+# El nombre a mostrar dependerá del supertype
+if selected_supertype == 'Pokémon':
+    name_options_col = 'base_pokemon_name'
+    name_label = "Filtrar por Pokémon (Nombre Base):"
+else: # Para Entrenador, Energía, etc., usar el nombre completo
+    name_options_col = 'name'
+    name_label = f"Filtrar por Nombre ({selected_supertype if selected_supertype != 'Todos' else 'Carta'}):"
+
+# Obtener opciones de nombre del dataframe ya filtrado por supertype (y potencialmente set si se implementara filtrado en cascada más complejo)
+name_options = sorted(filtered_metadata_by_supertype_df[name_options_col].dropna().unique().tolist())
+selected_base_names = st.sidebar.multiselect(name_label, name_options)
+
+
+# 4. Filtro por Rareza (basado en el supertype ya filtrado)
+rarity_options = sorted(filtered_metadata_by_supertype_df['rarity'].dropna().unique().tolist())
 selected_rarities = st.sidebar.multiselect("Filtrar por Rareza:", rarity_options)
 
-# Widget de ordenamiento
+
+# 5. Ordenamiento
 sort_order = st.sidebar.radio("Ordenar por Precio (Trend):", ("Ascendente", "Descendente"), index=1)
 sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 
+
 # --- Construcción y Ejecución de la Consulta Principal ---
-@st.cache_data(ttl=600) # Cachea los datos filtrados por 10 minutos
-def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pokemons: list, rarities: list, sort: str) -> pd.DataFrame:
-    """Construye y ejecuta la consulta dinámica para obtener datos de cartas."""
+@st.cache_data(ttl=600)
+def fetch_card_data(
+    _client: bigquery.Client,
+    latest_table: str,
+    supertype_filter: str | None,
+    set_filters: list,
+    base_name_filters: list, # Puede ser nombre base de Pokémon o nombre completo de Entrenador/Energía
+    rarity_filters: list,
+    sort: str,
+    all_meta_df: pd.DataFrame # Pasamos el dataframe completo de metadatos
+    ) -> pd.DataFrame:
+
+    # Paso 1: Filtrar el DataFrame de metadatos localmente ANTES de construir la consulta SQL
+    # Esto es más eficiente para el filtrado de nombre base si `base_name_filters` se refiere a 'base_pokemon_name'
+    query_ids_df = all_meta_df.copy()
+
+    if supertype_filter and supertype_filter != "Todos":
+        query_ids_df = query_ids_df[query_ids_df['supertype'] == supertype_filter]
+
+    if set_filters:
+        query_ids_df = query_ids_df[query_ids_df['set_name'].isin(set_filters)]
+
+    if rarity_filters:
+        query_ids_df = query_ids_df[query_ids_df['rarity'].isin(rarity_filters)]
+
+    # Filtrado por nombre (base_pokemon_name o name completo)
+    if base_name_filters:
+        if supertype_filter == 'Pokémon':
+            query_ids_df = query_ids_df[query_ids_df['base_pokemon_name'].isin(base_name_filters)]
+        else: # Para Entrenador, Energía, etc., o si supertype es "Todos" y se filtra por un nombre específico
+            query_ids_df = query_ids_df[query_ids_df['name'].isin(base_name_filters)]
+
+
+    if query_ids_df.empty:
+        logging.info("El filtrado local de metadatos no produjo IDs, no se ejecutará consulta a BQ.")
+        return pd.DataFrame()
+
+    # Obtener la lista de IDs para la consulta SQL
+    list_of_ids_to_query = query_ids_df['id'].unique().tolist()
+    if not list_of_ids_to_query:
+        return pd.DataFrame() # No hay IDs, no hay nada que consultar
+
+    # Paso 2: Construir la consulta SQL solo con los IDs filtrados
     base_query = f"""
     SELECT
-        c.id,
-        c.name AS pokemon_name,
-        c.set_name,
-        c.rarity,
-        c.artist,
-        c.images_large AS image_url,
-        p.cm_trendPrice AS price
+        meta.id,
+        meta.name AS pokemon_name, -- Este será el nombre completo de la carta
+        meta.supertype,
+        meta.set_name,
+        meta.rarity,
+        meta.artist,
+        meta.images_large AS image_url,
+        prices.cm_trendPrice AS price
     FROM
-        `{CARD_METADATA_TABLE}` AS c
+        `{CARD_METADATA_TABLE}` AS meta
     JOIN
-        `{latest_table}` AS p ON c.id = p.id
-    WHERE 1=1
+        `{latest_table}` AS prices ON meta.id = prices.id
+    WHERE meta.id IN UNNEST(@card_ids) -- Filtramos por los IDs preseleccionados
     """
+    base_query += f" ORDER BY prices.cm_trendPrice {sort}"
 
-    params = []
-    filter_clauses = []
-
-    if sets:
-        filter_clauses.append("c.set_name IN UNNEST(@sets)")
-        params.append(bigquery.ArrayQueryParameter("sets", "STRING", sets))
-    if pokemons:
-        filter_clauses.append("c.name IN UNNEST(@pokemons)")
-        params.append(bigquery.ArrayQueryParameter("pokemons", "STRING", pokemons))
-    if rarities:
-        filter_clauses.append("c.rarity IN UNNEST(@rarities)")
-        params.append(bigquery.ArrayQueryParameter("rarities", "STRING", rarities))
-
-    if filter_clauses:
-        base_query += " AND " + " AND ".join(filter_clauses)
-
-    base_query += f" ORDER BY price {sort}"
-
+    params = [bigquery.ArrayQueryParameter("card_ids", "STRING", list_of_ids_to_query)]
     job_config = bigquery.QueryJobConfig(query_parameters=params)
 
-    # --- Logging de parámetros AÚN MÁS DEFENSIVO ---
-    param_details_str = "No parameters"
-    if params:
-        param_details_list = []
-        for p_idx, p_obj in enumerate(params):
-            p_name = getattr(p_obj, 'name', f'param_{p_idx}')
-            p_values_str = "N/A"
-            p_type_str = "UNKNOWN"
-
-            if isinstance(p_obj, bigquery.ArrayQueryParameter):
-                p_values_str = str(getattr(p_obj, 'values', "N/A"))
-                if hasattr(p_obj, 'parameter_type') and p_obj.parameter_type is not None and hasattr(p_obj.parameter_type, 'type_'):
-                    p_type_str = f"ARRAY<{p_obj.parameter_type.type_}>"
-                else:
-                    p_type_str = "ARRAY<UNKNOWN_ELEMENT_TYPE>"
-            elif isinstance(p_obj, bigquery.ScalarQueryParameter):
-                p_values_str = str(getattr(p_obj, 'value', "N/A"))
-                p_type_str = getattr(p_obj, 'type_', "UNKNOWN")
-            
-            param_details_list.append(f"({p_name}, {p_type_str}, values_preview='{p_values_str[:50]}{'...' if len(p_values_str) > 50 else ''}')")
-        param_details_str = "; ".join(param_details_list)
-    
-    logging.info(f"Ejecutando consulta: {base_query} con parámetros: {param_details_str}")
-    # --- FIN DE LA CORRECCIÓN DEFENSIVA ---
+    logging.info(f"Ejecutando consulta con {len(list_of_ids_to_query)} IDs. Orden: {sort}")
 
     try:
         query_job = _client.query(base_query, job_config=job_config)
@@ -215,47 +219,41 @@ def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pok
         return results_df
     except Exception as e:
         if "db-dtypes" in str(e).lower():
-             st.error("Error: Falta la librería 'db-dtypes'. Asegúrate de que esté en requirements.txt y reinicia la app.")
-             logging.error("Error de dependencia: db-dtypes no encontrado al ejecutar consulta.", exc_info=True)
+             st.error("Error: Falta 'db-dtypes'. Añádelo a requirements.txt.")
         else:
-            st.error(f"Error al ejecutar la consulta principal: {e}. Revisa los nombres de columna, tablas y permisos.")
-            logging.error(f"Error al ejecutar la consulta principal: {e}", exc_info=True)
+            st.error(f"Error al ejecutar consulta principal: {e}.")
         return pd.DataFrame()
 
-# Ejecutar la consulta con los filtros actuales (solo si bq_client es válido)
-if bq_client and LATEST_SNAPSHOT_TABLE: # LATEST_SNAPSHOT_TABLE también debe ser válido
-    results_df = fetch_card_data(
-        bq_client,
-        LATEST_SNAPSHOT_TABLE,
-        selected_sets,
-        selected_pokemons,
-        selected_rarities,
-        sort_sql
-    )
-else:
-    results_df = pd.DataFrame() # DataFrame vacío si no se puede consultar
-
+# Ejecutar la consulta
+results_df = fetch_card_data(
+    bq_client,
+    LATEST_SNAPSHOT_TABLE,
+    selected_supertype,
+    selected_sets,
+    selected_base_names,
+    selected_rarities,
+    sort_sql,
+    all_card_metadata_df # Pasamos el DF de metadatos completo
+)
 
 # --- Área Principal: Visualización de Resultados ---
 st.header("Resultados")
 
 if not results_df.empty:
-    # Prepara el DataFrame para mostrar: selecciona columnas y renombra
     display_columns_mapping = {
         'id': 'ID',
-        'pokemon_name': 'Pokémon',
+        'pokemon_name': 'Nombre Completo', # Mostramos el nombre completo de la carta
+        'supertype': 'Categoría',
         'set_name': 'Set',
         'rarity': 'Rareza',
         'artist': 'Artista',
-        'price': 'Precio (Trend €)' # Ajusta la etiqueta si usaste otro precio
+        'price': 'Precio (Trend €)'
     }
-    # Filtra solo las columnas que existen en results_df para evitar errores
     actual_columns_to_display = [col for col in display_columns_mapping.keys() if col in results_df.columns]
     display_df = results_df[actual_columns_to_display].copy()
     display_df.rename(columns=display_columns_mapping, inplace=True)
 
-    # Formatea la columna de precio para mostrar con símbolo y decimales, si existe
-    price_display_column = display_columns_mapping.get('price') # Obtiene el nombre renombrado
+    price_display_column = display_columns_mapping.get('price')
     if price_display_column and price_display_column in display_df.columns:
          display_df[price_display_column] = display_df[price_display_column].apply(lambda x: f"€{x:.2f}" if pd.notna(x) else "N/A")
 
@@ -264,9 +262,8 @@ if not results_df.empty:
     st.divider()
     st.header("Detalle de Carta")
 
-    # Usa la columna 'id' del DataFrame original results_df para generar opciones
-    # Asegúrate de que 'pokemon_name' e 'id' existen en results_df antes de crear opciones
     if 'pokemon_name' in results_df.columns and 'id' in results_df.columns:
+        # Usamos el nombre completo de la carta (pokemon_name) para el selector de detalles
         card_options = results_df['pokemon_name'].astype(str) + " (" + results_df['id'].astype(str) + ")"
         selected_card_display = st.selectbox("Selecciona una carta para ver detalles:", options=card_options)
 
@@ -275,35 +272,26 @@ if not results_df.empty:
             card_details = results_df[results_df['id'] == selected_card_id_str].iloc[0]
 
             col1, col2 = st.columns([1, 2])
-
             with col1:
                 if 'image_url' in card_details and pd.notna(card_details['image_url']):
                     st.image(card_details['image_url'], caption=f"{card_details['pokemon_name']} - {card_details['set_name']}", width=300)
                 else:
                     st.warning("Imagen no disponible.")
-
             with col2:
-                st.subheader(f"{card_details['pokemon_name']}")
+                st.subheader(f"{card_details['pokemon_name']}") # Nombre completo
                 if 'id' in card_details: st.markdown(f"**ID:** `{card_details['id']}`")
+                if 'supertype' in card_details: st.markdown(f"**Categoría:** {card_details['supertype']}")
                 if 'set_name' in card_details: st.markdown(f"**Set:** {card_details['set_name']}")
                 if 'rarity' in card_details: st.markdown(f"**Rareza:** {card_details['rarity']}")
                 if 'artist' in card_details and pd.notna(card_details['artist']) and card_details['artist']:
                      st.markdown(f"**Artista:** {card_details['artist']}")
                 if 'price' in card_details:
                      st.metric(label="Precio (Trend €)", value=f"€{card_details['price']:.2f}" if pd.notna(card_details['price']) else "N/A")
-
-
-                # --- (Opcional) Integración con Predicción de Precios ---
-                # st.subheader("Predicción de Precio (Próximo Mes) [Opcional]")
-                # ... (Código de predicción aquí, asegurándose de usar las columnas correctas) ...
-
-    else: # Si 'pokemon_name' o 'id' no están en results_df (puede pasar si la consulta falló mal)
-        st.warning("No se pueden mostrar detalles de cartas, datos insuficientes.")
-
+    else:
+        st.warning("No se pueden mostrar detalles de cartas.")
 else:
     if bq_client and LATEST_SNAPSHOT_TABLE:
-        st.info("No se encontraron cartas con los filtros seleccionados o hubo un error al consultar los datos. Verifica los filtros o los logs para más detalles.")
-    # Si bq_client o LATEST_SNAPSHOT_TABLE fallaron, el error ya se mostró antes.
+        st.info("No se encontraron cartas con los filtros seleccionados o hubo un error al consultar los datos.")
 
 # --- Footer opcional ---
 st.sidebar.info("Aplicación Pokémon TCG Explorer")
