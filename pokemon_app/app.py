@@ -1,4 +1,8 @@
 import streamlit as st
+d - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 import pandas as pd
 from google.cloud import bigquery
 from google.oauth2 import service_account 
