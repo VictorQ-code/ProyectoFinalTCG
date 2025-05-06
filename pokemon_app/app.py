@@ -4,7 +4,7 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 import re
 import logging
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 # --- Configuración Inicial ---
 st.set_page_config(layout="wide", page_title="Pokémon TCG Explorer")
@@ -78,14 +78,22 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
             potential_base = mw_base
             remaining_part = name_str[len(mw_base):].strip()
             temp_remaining_name = remaining_part
-            for suffix in suffixes:
-                if temp_remaining_name.startswith(suffix.strip()):
-                    temp_remaining_name = temp_remaining_name[len(suffix.strip()):].strip()
-                    break
-            return potential_base
+            for suffix in suffixes: # Buscar sufijos conocidos en la parte restante
+                # Usar startswith para sufijos porque pueden ser parte de un nombre más largo
+                # Ejemplo: "Mr. Mime VMAX" -> remaining_part es "VMAX"
+                if temp_remaining_name.startswith(suffix.strip()): 
+                    # No necesitamos hacer nada más con temp_remaining_name,
+                    # ya que el base es `potential_base`
+                    return potential_base # Devolver el multi-word base
+            # Si no se encontraron sufijos en la parte restante, Y la parte restante NO está vacía
+            # significa que es algo como "Zacian V-UNION Left", donde "Left" no es un sufijo.
+            # En este caso, el nombre completo es más apropiado que solo "Zacian V-UNION" si
+            # "Left" es distintivo. Pero para "base name", `potential_base` es correcto.
+            return potential_base 
+            
     cleaned_name = name_str
     for suffix in suffixes:
-        if cleaned_name.endswith(suffix):
+        if cleaned_name.endswith(suffix): # Para sufijos generales, endswith es más seguro
             cleaned_name = cleaned_name[:-len(suffix)].strip()
     return cleaned_name if cleaned_name else name_str
 
@@ -170,7 +178,11 @@ def fetch_card_data(_client: bigquery.Client, latest_table_path: str, supertype_
         ids_to_query_df = ids_to_query_df[ids_to_query_df['rarity'].isin(rarities_ui_filter)]
     if names_ui_filter:
         name_col_to_filter_on = 'base_pokemon_name' if supertype_ui_filter == 'Pokémon' else 'name'
-        ids_to_query_df = ids_to_query_df[ids_to_query_df[name_col_to_filter_on].isin(names_ui_filter)]
+        # Asegurar que la columna exista antes de filtrar
+        if name_col_to_filter_on in ids_to_query_df.columns:
+             ids_to_query_df = ids_to_query_df[ids_to_query_df[name_col_to_filter_on].isin(names_ui_filter)]
+        else:
+             logging.warning(f"Columna de filtro de nombre '{name_col_to_filter_on}' no encontrada en el DataFrame de metadatos.")
 
     if ids_to_query_df.empty: return pd.DataFrame()
     list_of_card_ids = ids_to_query_df['id'].unique().tolist()
@@ -200,11 +212,12 @@ results_df = fetch_card_data(bq_client, LATEST_SNAPSHOT_TABLE, selected_supertyp
 # --- Área Principal: Visualización de Resultados ---
 st.header("Resultados")
 
-# Variable de estado para guardar el ID de la carta seleccionada en AgGrid
+# Inicializar el estado de sesión para la carta seleccionada
 if 'selected_card_id_from_grid' not in st.session_state:
     st.session_state.selected_card_id_from_grid = None
 
 if not results_df.empty:
+    # Preparar DataFrame para AgGrid
     display_columns_mapping = {
         'id': 'ID', 'pokemon_name': 'Nombre Carta', 'supertype': 'Categoría',
         'set_name': 'Set', 'rarity': 'Rareza', 'artist': 'Artista', 'price': 'Precio (Trend €)'
@@ -219,62 +232,69 @@ if not results_df.empty:
              lambda x: f"€{x:.2f}" if pd.notna(x) else "N/A"
          )
 
+    # Configuración de AgGrid
     gb = GridOptionsBuilder.from_dataframe(display_df_for_aggrid)
-    gb.configure_selection(selection_mode='single', use_checkbox=False, pre_selected_rows=None) # No pre-selección
-    # gb.configure_pagination(paginationAutoPageSize=True)
-    gb.configure_grid_options(domLayout='normal') # Para control de altura
+    gb.configure_selection(selection_mode='single', use_checkbox=False)
+    gb.configure_grid_options(domLayout='normal') # Necesario para control de altura
+    # Opcional: Hacer la columna ID no visible para el usuario pero disponible en los datos
+    # gb.configure_column("ID", hide=True) 
     gridOptions = gb.build()
 
     st.write("Haz clic en una fila de la tabla para ver sus detalles:")
     grid_response = AgGrid(
         display_df_for_aggrid,
         gridOptions=gridOptions,
-        height=400, # Altura fija para la tabla
+        height=400, 
         width='100%',
-        data_return_mode=DataReturnMode.AS_INPUT, # Devuelve datos como se pasaron
-        update_mode=GridUpdateMode.MODEL_CHANGED, # Actualiza cuando el modelo cambia
-        fit_columns_on_grid_load=False, # Evita que se ajuste al cargar, puede ser lento
-        allow_unsafe_jscode=True, # Para algunas funcionalidades
-        key='pokemon_results_grid', # Clave única para el componente
-        # reload_data=True # Considerar si es necesario para forzar recarga
+        data_return_mode=DataReturnMode.AS_INPUT, 
+        update_mode=GridUpdateMode.MODEL_CHANGED, 
+        fit_columns_on_grid_load=False, 
+        allow_unsafe_jscode=True, 
+        key='pokemon_results_aggrid_final', # Key actualizada
+        # No usar reload_data=True a menos que sea estrictamente necesario, puede causar bucles.
     )
 
-    # Actualizar el estado de la carta seleccionada si se hace clic en AgGrid
+    newly_selected_id = None
     if grid_response['selected_rows']:
-        # El ID original está en la columna 'ID' de display_df_for_aggrid,
-        # que mapea a 'id' en results_df.
-        # AgGrid devuelve la fila con los nombres de columna de display_df_for_aggrid
-        selected_id_from_aggrid_display = grid_response['selected_rows'][0]['ID']
-        st.session_state.selected_card_id_from_grid = selected_id_from_aggrid_display
-        # st.experimental_rerun() # Forzar un rerun para actualizar la sección de detalles
+        # AgGrid devuelve la fila con los nombres de columna de display_df_for_aggrid.
+        # La columna 'ID' en display_df_for_aggrid contiene el 'id' original de la carta.
+        newly_selected_id = grid_response['selected_rows'][0]['ID']
+
+    # Solo actualiza el estado y re-ejecuta si la selección cambió
+    if newly_selected_id and newly_selected_id != st.session_state.selected_card_id_from_grid:
+        st.session_state.selected_card_id_from_grid = newly_selected_id
+        st.experimental_rerun()
 
     st.divider()
     st.header("Detalle de Carta")
 
-    card_to_display_details_df_row = None
+    card_to_display = None # Esta será una Serie de Pandas de la carta a mostrar
     
-    # Usar el ID de la sesión si existe (seleccionado desde AgGrid)
+    # Priorizar la selección del grid
     if st.session_state.selected_card_id_from_grid:
-        # Buscar en el results_df original usando el 'id' (que es el valor de 'ID' en la tabla)
-        match = results_df[results_df['id'] == st.session_state.selected_card_id_from_grid]
-        if not match.empty:
-            card_to_display_details_df_row = match.iloc[0]
-    elif not results_df.empty: # Si no hay selección de grid pero hay resultados, tomar el primero
-        card_to_display_details_df_row = results_df.iloc[0]
-        # Actualizar el estado de sesión con el primero para consistencia
-        if 'id' in card_to_display_details_df_row:
-             st.session_state.selected_card_id_from_grid = card_to_display_details_df_row['id']
+        # Buscar en el results_df original usando el 'id' (valor de la columna 'ID' de la tabla)
+        matched_df = results_df[results_df['id'] == st.session_state.selected_card_id_from_grid]
+        if not matched_df.empty:
+            card_to_display = matched_df.iloc[0] # Tomar la primera fila (Serie)
+            
+    # Si no hay selección del grid (o no se encontró), pero hay resultados, tomar el primero
+    # Esto cubre la carga inicial o cuando los filtros cambian sin un clic en la tabla
+    if card_to_display is None and not results_df.empty:
+        card_to_display = results_df.iloc[0]
+        # Si estamos mostrando el primero por defecto, actualizamos el session_state
+        # para que refleje esto (si es que no había una selección de grid).
+        if st.session_state.selected_card_id_from_grid is None and 'id' in card_to_display:
+            st.session_state.selected_card_id_from_grid = card_to_display['id']
 
-
-    if card_to_display_details_df_row is not None:
-        card_name_detail = card_to_display_details_df_row.get('pokemon_name', "N/A")
-        card_id_detail = card_to_display_details_df_row.get('id', "N/A")
-        card_set_detail = card_to_display_details_df_row.get('set_name', "N/A")
-        card_image_url_detail = card_to_display_details_df_row.get('image_url', None)
-        card_supertype_detail = card_to_display_details_df_row.get('supertype', "N/A")
-        card_rarity_detail = card_to_display_details_df_row.get('rarity', "N/A")
-        card_artist_detail = card_to_display_details_df_row.get('artist', None)
-        card_price_detail = card_to_display_details_df_row.get('price', None)
+    if card_to_display is not None and isinstance(card_to_display, pd.Series) and not card_to_display.empty:
+        card_name_detail = card_to_display.get('pokemon_name', "N/A")
+        card_id_detail = card_to_display.get('id', "N/A")
+        card_set_detail = card_to_display.get('set_name', "N/A")
+        card_image_url_detail = card_to_display.get('image_url', None)
+        card_supertype_detail = card_to_display.get('supertype', "N/A")
+        card_rarity_detail = card_to_display.get('rarity', "N/A")
+        card_artist_detail = card_to_display.get('artist', None)
+        card_price_detail = card_to_display.get('price', None)
 
         col1, col2 = st.columns([1, 2])
         with col1:
@@ -295,10 +315,10 @@ if not results_df.empty:
             else:
                  st.markdown("**Precio (Trend €):** N/A")
     else:
-        st.info("Haz clic en una carta en la tabla de resultados para ver sus detalles.")
+        st.info("Haz clic en una carta en la tabla de resultados para ver sus detalles o aplica filtros para ver cartas.")
 
-else:
+else: # Si results_df está vacío desde el principio
     if bq_client and LATEST_SNAPSHOT_TABLE:
         st.info("No se encontraron cartas con los filtros seleccionados.")
 
-st.sidebar.info("Pokémon TCG Explorer v3 (AgGrid)")
+st.sidebar.info("Pokémon TCG Explorer v3.1 (AgGrid)")
