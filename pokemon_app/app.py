@@ -9,10 +9,9 @@ import numpy as np
 import os
 import tensorflow as tf
 import joblib
-import typing # Para anotaciones de tipo más genéricas si es necesario
+import typing
 
 # --- Configuración Inicial ---
-# ... (igual que antes) ...
 st.set_page_config(layout="wide", page_title="Pokémon TCG Explorer")
 logging.basicConfig(
     level=logging.INFO, # Puedes cambiar a logging.DEBUG para más detalle
@@ -20,11 +19,11 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
-logger.info(f"TensorFlow Version: {tf.__version__}") # Debería ser 2.16+
-logger.info(f"Keras Version (via TF): {tf.keras.__version__}") # Debería ser 3.x+
+logger.info(f"TensorFlow Version: {tf.__version__}")
+logger.info(f"Keras Version (via TF): {tf.keras.__version__}")
+
 
 # --- Constantes y Configuración de GCP ---
-# ... (igual que antes) ...
 try:
     GCP_PROJECT_ID = st.secrets["gcp_service_account"]["project_id"]
     logger.info(f"CONFIG: GCP Project ID '{GCP_PROJECT_ID}' cargado.")
@@ -52,15 +51,22 @@ OHE_PATH = os.path.join(MODEL_ARTIFACTS_DIR, OHE_PKL_FILENAME)
 SCALER_PATH = os.path.join(MODEL_ARTIFACTS_DIR, SCALER_PKL_FILENAME)
 
 # --- CONFIGURACIÓN DEL MODELO LOCAL (¡¡¡MUY IMPORTANTE AJUSTAR!!!) ---
-_NUMERICAL_COLS_FOR_MODEL_PREPROCESSING = ['log_current_price'] # REEMPLAZA! Ejemplo
-_CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING = ['rarity_transformed', 'set_name_category'] # REEMPLAZA! Ejemplo
-_MODEL_INPUT_TENSOR_KEY_NAME = None # o 'input_1', etc.
-_MODEL_OUTPUT_TENSOR_KEY_NAME = 'output_0' # o el nombre de tu capa de salida
-_TARGET_PREDICTED_IS_LOG_TRANSFORMED = False # Cambia a True si tu modelo predice log(precio)
+# Estas son las columnas que tu modelo espera DESPUÉS de que hayas extraído
+# y posiblemente transformado datos de 'card_data_series', y ANTES de aplicar ohe/scaler.
+# ¡¡¡DEBES AJUSTAR ESTAS LISTAS A TU CASO REAL!!!
+# Reemplaza con tus columnas numéricas reales que alimentaste al scaler.
+_NUMERICAL_COLS_FOR_MODEL_PREPROCESSING = ['log_current_price', 'otra_col_numerica'] # ¡EJEMPLO, AJUSTA ESTO!
+# Reemplaza con tus columnas categóricas reales que alimentaste al OneHotEncoder.
+_CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING = ['rarity_transformed', 'set_name_category', 'subtipo_principal'] # ¡EJEMPLO, AJUSTA ESTO!
+
+_MODEL_INPUT_TENSOR_KEY_NAME = 'inputs'    # ACTUALIZADO según saved_model_cli
+_MODEL_OUTPUT_TENSOR_KEY_NAME = 'output_0' # CONFIRMADO según saved_model_cli
+
+# Ajusta esto si tu modelo fue entrenado para predecir log(precio) y necesitas np.exp() en la salida
+_TARGET_PREDICTED_IS_LOG_TRANSFORMED = False # Cambia a True si es necesario
 
 
 # --- Conexión Segura a BigQuery ---
-# ... (igual que antes) ...
 @st.cache_resource
 def connect_to_bigquery():
     try:
@@ -69,6 +75,7 @@ def connect_to_bigquery():
             st.error("Error: Sección [gcp_service_account] no encontrada.")
             return None
         creds_json = dict(st.secrets["gcp_service_account"])
+        # ... (resto de la función connect_to_bigquery sin cambios)
         required_keys = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id"]
         missing_keys = [key for key in required_keys if key not in creds_json or not creds_json[key]]
         if missing_keys:
@@ -89,43 +96,31 @@ if bq_client is None:
     logger.critical("APP_STOP: No se pudo conectar a BigQuery.")
     st.stop()
 
+
 # --- FUNCIONES DE CARGA DE MODELO Y PREPROCESADORES ---
 @st.cache_resource
 def load_local_tf_model_as_layer(model_path):
     saved_model_pb_path = os.path.join(model_path, "saved_model.pb")
     if not os.path.exists(saved_model_pb_path):
         logger.error(f"LOAD_TF_LAYER: 'saved_model.pb' no encontrado en la ruta del modelo: {model_path}")
-        st.error(f"Error Crítico: El archivo 'saved_model.pb' no se encuentra en '{model_path}'. " # ... (mensaje de error igual)
-                 "Asegúrate de que la carpeta '{os.path.basename(model_path)}' (ej. 'model_files') "
+        st.error(f"Error Crítico: El archivo 'saved_model.pb' no se encuentra en '{model_path}'. "
+                 f"Asegúrate de que la carpeta '{os.path.basename(model_path)}' (ej. 'model_files') "
                  "exista en tu repositorio y contenga la estructura del SavedModel (saved_model.pb, variables/, etc.).")
         return None
     try:
         logger.info(f"LOAD_TF_LAYER: Intentando cargar SavedModel como TFSMLayer desde: {model_path}")
         model_as_layer_obj = tf.keras.layers.TFSMLayer(model_path, call_endpoint='serving_default')
         logger.info(f"LOAD_TF_LAYER: SavedModel cargado exitosamente como TFSMLayer.")
-
-        # --- CORRECCIÓN AQUÍ ---
-        # En lugar de model_as_layer_obj.input_signature, que da error.
-        # Puedes intentar acceder a _call_signature o simplemente confiar en que el modelo
-        # se cargó si no hay excepción. La inspección de la firma es más para depuración.
         try:
-            # Esto es más para información, si falla no es crítico para la carga en sí.
             logger.info(f"LOAD_TF_LAYER: Call Signature (info interna): {model_as_layer_obj._call_signature}")
         except AttributeError:
             logger.warning("LOAD_TF_LAYER: No se pudo acceder a '_call_signature'. Esto es solo informativo.")
-        
-        logger.info(f"LOAD_TF_LAYER: Output Signature (structured_outputs): {model_as_layer_obj.structured_outputs}")
-
-        if _MODEL_OUTPUT_TENSOR_KEY_NAME not in model_as_layer_obj.structured_outputs:
-            logger.warning(f"LOAD_TF_LAYER: La clave de salida configurada '{_MODEL_OUTPUT_TENSOR_KEY_NAME}' " # ... (mensaje igual)
-                           f"NO se encuentra en las salidas del modelo: {list(model_as_layer_obj.structured_outputs.keys())}. "
-                           "Por favor, verifica _MODEL_OUTPUT_TENSOR_KEY_NAME.")
-            st.warning(f"Advertencia: La clave de salida del modelo local '{_MODEL_OUTPUT_TENSOR_KEY_NAME}' podría no ser correcta. "
-                       f"Salidas disponibles: {list(model_as_layer_obj.structured_outputs.keys())}")
+        logger.info("LOAD_TF_LAYER: La inspección directa de 'structured_outputs' no está disponible en esta versión de TFSMLayer. "
+                    f"Se usará la clave de salida configurada: '{_MODEL_OUTPUT_TENSOR_KEY_NAME}'. "
+                    "Verifícala con `saved_model_cli` si hay problemas de predicción.")
         return model_as_layer_obj
     except Exception as e:
         logger.error(f"LOAD_TF_LAYER: Error crítico al cargar SavedModel como TFSMLayer desde {model_path}: {e}", exc_info=True)
-        # ... (mensaje de error igual) ...
         st.error(f"Error Crítico al Cargar Modelo Local: {e}. Revisa los logs y la configuración del modelo.")
         st.info( "Si el error es sobre 'call_endpoint', verifica el nombre usado al guardar el modelo "
                 "(puedes usar `saved_model_cli show --dir ruta/a/model_files --all` en tu terminal local).")
@@ -133,7 +128,6 @@ def load_local_tf_model_as_layer(model_path):
 
 @st.cache_resource
 def load_local_preprocessor(file_path, preprocessor_name="Preprocessor"):
-    # ... (sin cambios, ya era robusta) ...
     if not os.path.exists(file_path):
         logger.error(f"LOAD_PREPROC: Archivo '{preprocessor_name}' no encontrado en: {file_path}")
         st.error(f"Error Crítico: El archivo preprocesador '{preprocessor_name}' no se encuentra en '{file_path}'. "
@@ -148,18 +142,17 @@ def load_local_preprocessor(file_path, preprocessor_name="Preprocessor"):
         st.error(f"Error Crítico al Cargar Preprocesador '{preprocessor_name}': {e}")
         return None
 
-
 # --- Carga de Modelo y Preprocesadores al inicio de la app ---
-# ... (sin cambios) ...
 logger.info("APP_INIT: Iniciando carga de artefactos del modelo local.")
 local_tf_model_layer = load_local_tf_model_as_layer(TF_SAVED_MODEL_PATH)
 ohe_local_preprocessor = load_local_preprocessor(OHE_PATH, "OneHotEncoder")
 scaler_local_preprocessor = load_local_preprocessor(SCALER_PATH, "ScalerNumérico")
 
+
 # --- Funciones Auxiliares (código de BigQuery, etc.) ---
-# ... (sin cambios: get_latest_snapshot_table, get_true_base_name, get_card_metadata_with_base_names) ...
 @st.cache_data(ttl=3600)
 def get_latest_snapshot_table(_client: bigquery.Client) -> str | None:
+    # ... (sin cambios)
     query = f"SELECT table_id FROM `{_client.project}.{BIGQUERY_DATASET}`.__TABLES__ WHERE STARTS_WITH(table_id, 'monthly_') ORDER BY table_id DESC LIMIT 1"
     try:
         results = _client.query(query).result()
@@ -179,6 +172,7 @@ POKEMON_SUFFIXES_TO_REMOVE = [' VMAX', ' VSTAR', ' V-UNION', ' V', ' GX', ' EX',
 MULTI_WORD_BASE_NAMES = ["Mr. Mime", "Mime Jr.", "Farfetch'd", "Sirfetch'd", "Ho-Oh", "Porygon-Z", "Type: Null", "Tapu Koko", "Tapu Lele", "Tapu Bulu", "Tapu Fini", "Mr. Rime", "Indeedee M", "Indeedee F", "Great Tusk", "Iron Treads"] # yapf: disable
 
 def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
+    # ... (sin cambios)
     if not isinstance(name_str, str) or supertype != 'Pokémon': return name_str
     for mw_base in multi_word_bases:
         if name_str.startswith(mw_base): return mw_base
@@ -189,6 +183,7 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
 
 @st.cache_data(ttl=3600)
 def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
+    # ... (sin cambios)
     query = f"""
     SELECT
         id, name, supertype, subtypes, rarity, set_id, set_name,
@@ -222,49 +217,56 @@ def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
 
 
 # --- FUNCIÓN DE PREDICCIÓN CON MODELO LOCAL (TFSMLayer) ---
-# --- CORRECCIÓN AQUÍ para las anotaciones de tipo ---
 def predict_price_with_local_tf_layer(
     model_layer: tf.keras.layers.TFSMLayer,
-    ohe: typing.Any, # O sklearn.preprocessing.OneHotEncoder si estás seguro
-    scaler: typing.Any, # O sklearn.preprocessing.StandardScaler si estás seguro
+    ohe: typing.Any,
+    scaler: typing.Any,
     card_data_series: pd.Series
 ) -> float | None:
-    # ... (el resto de la función predict_price_with_local_tf_layer es igual que en la respuesta anterior) ...
-    # Asegúrate de que esta función esté implementada como en la respuesta anterior,
-    # con todos los logs detallados para el mapeo, preprocesamiento, llamada al modelo y extracción de salida.
     logger.info(f"PREDICT_LOCAL_ENTRY: Iniciando predicción para carta ID: {card_data_series.get('id', 'N/A')}")
 
-    if not model_layer:
-        logger.error("PREDICT_LOCAL_FAIL: El objeto TFSMLayer no está cargado o es None.")
-        st.error("Error Interno: Modelo local (TFSMLayer) no disponible para predicción.")
-        return None
-    if not ohe:
-        logger.error("PREDICT_LOCAL_FAIL: Objeto OneHotEncoder no cargado o es None.")
-        st.error("Error Interno: Preprocesador OneHotEncoder no disponible.")
-        return None
-    if not scaler:
-        logger.error("PREDICT_LOCAL_FAIL: Objeto Scaler no cargado o es None.")
-        st.error("Error Interno: Preprocesador Scaler no disponible.")
+    if not model_layer or not ohe or not scaler:
+        # ... (checks y mensajes de error sin cambios)
+        logger.error("PREDICT_LOCAL_FAIL: Modelo TFSMLayer o preprocesadores no disponibles.")
+        st.error("Error Interno: Componentes del modelo local no disponibles para predicción.")
         return None
 
     try:
         # --- PASO 1: Preparar DataFrame de entrada para preprocesamiento ---
         data_for_preprocessing_df_dict = {}
-        # EJEMPLO DE MAPEO (DEBES AJUSTAR ESTO DETALLADAMENTE):
-        if 'log_current_price' in _NUMERICAL_COLS_FOR_MODEL_PREPROCESSING: # Usando la constante global
-            current_price = card_data_series.get('price', 0)
-            if pd.notna(current_price) and current_price > 0:
-                data_for_preprocessing_df_dict['log_current_price'] = np.log(current_price)
+
+        # --- INICIO DE SECCIÓN CRÍTICA A AJUSTAR POR TI ---
+        # Debes mapear los datos de `card_data_series` a las columnas que
+        # esperan tus preprocesadores, usando los nombres definidos en
+        # _NUMERICAL_COLS_FOR_MODEL_PREPROCESSING y _CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING.
+
+        # Ejemplo para columnas numéricas (¡AJUSTA ESTO!)
+        for col_name in _NUMERICAL_COLS_FOR_MODEL_PREPROCESSING:
+            if col_name == 'log_current_price': # Ejemplo específico
+                current_price = card_data_series.get('price', 0) # 'price' viene de tu results_df
+                data_for_preprocessing_df_dict[col_name] = np.log(current_price) if pd.notna(current_price) and current_price > 0 else 0
+            # Añade más 'elif col_name == ...' para otras transformaciones numéricas específicas
+            # o un 'else' genérico si la columna se toma tal cual de card_data_series
+            elif col_name in card_data_series:
+                 data_for_preprocessing_df_dict[col_name] = card_data_series.get(col_name)
             else:
-                data_for_preprocessing_df_dict['log_current_price'] = 0 
-                logger.warning("PREDICT_LOCAL_MAP: Precio actual no válido para log, usando 0.")
-        
-        if 'rarity_transformed' in _CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING: # Usando la constante global
-             data_for_preprocessing_df_dict['rarity_transformed'] = card_data_series.get('rarity', 'Unknown')
+                 logger.warning(f"PREDICT_LOCAL_MAP: Columna numérica '{col_name}' no encontrada en card_data_series ni manejada específicamente. Se usará 0 o NaN.")
+                 data_for_preprocessing_df_dict[col_name] = 0 # O np.nan, y maneja NaNs después si es necesario
 
-        if 'set_name_category' in _CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING: # Ejemplo, añade esto a tus constantes si lo usas
-             data_for_preprocessing_df_dict['set_name_category'] = card_data_series.get('set_name', 'Unknown_Set')
+        # Ejemplo para columnas categóricas (¡AJUSTA ESTO!)
+        for col_name in _CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING:
+            if col_name == 'rarity_transformed': # Ejemplo específico
+                 data_for_preprocessing_df_dict[col_name] = card_data_series.get('rarity', 'Unknown') # 'rarity' viene de results_df
+            elif col_name == 'set_name_category': # Ejemplo específico
+                 data_for_preprocessing_df_dict[col_name] = card_data_series.get('set_name', 'Unknown_Set') # 'set_name' viene de results_df
+            # Añade más 'elif col_name == ...' para otras transformaciones categóricas
+            elif col_name in card_data_series:
+                 data_for_preprocessing_df_dict[col_name] = card_data_series.get(col_name, 'Unknown_Category_Value')
+            else:
+                 logger.warning(f"PREDICT_LOCAL_MAP: Columna categórica '{col_name}' no encontrada en card_data_series ni manejada específicamente. Se usará 'Unknown'.")
+                 data_for_preprocessing_df_dict[col_name] = 'Unknown_Category_Value' # Un placeholder
 
+        # --- FIN DE SECCIÓN CRÍTICA A AJUSTAR POR TI ---
 
         all_expected_cols_for_prep = _NUMERICAL_COLS_FOR_MODEL_PREPROCESSING + _CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING
         missing_cols_for_prep = [col for col in all_expected_cols_for_prep if col not in data_for_preprocessing_df_dict]
@@ -275,21 +277,24 @@ def predict_price_with_local_tf_layer(
             return None
 
         current_input_df_for_preprocessing = pd.DataFrame([data_for_preprocessing_df_dict])
-        logger.info(f"PREDICT_LOCAL_PREPROC_DF: DataFrame para preprocesamiento: {current_input_df_for_preprocessing.to_dict()}")
+        logger.info(f"PREDICT_LOCAL_PREPROC_DF: DataFrame para preprocesamiento (1 fila): {current_input_df_for_preprocessing.shape}. Columnas: {list(current_input_df_for_preprocessing.columns)}")
+        logger.debug(f"PREDICT_LOCAL_PREPROC_DF_VALUES: Valores: {current_input_df_for_preprocessing.iloc[0].to_dict()}")
+
 
         # --- PASO 2: Aplicar preprocesamiento (Scaler y OneHotEncoder) ---
         processed_feature_parts = []
         if _NUMERICAL_COLS_FOR_MODEL_PREPROCESSING:
+            # ... (lógica de escalado igual, con logs)
             num_df_slice = current_input_df_for_preprocessing[_NUMERICAL_COLS_FOR_MODEL_PREPROCESSING]
-            if num_df_slice.isnull().all().all():
-                logger.error("PREDICT_LOCAL_SCALE_FAIL: Todas las características numéricas son NaN antes de escalar.")
-                st.error("Error Interno: Datos numéricos no válidos para el modelo.")
-                return None
+            if num_df_slice.isnull().values.any(): # Chequeo más robusto de NaNs
+                logger.warning(f"PREDICT_LOCAL_SCALE: NaNs encontrados en características numéricas antes de escalar: {num_df_slice.isnull().sum().to_dict()}. Considera imputación si esto es un problema.")
+                # Aquí podrías decidir imputar NaNs o devolver error si no son esperados.
+                # Por ahora, el scaler podría fallar o producir NaNs.
             numerical_features_scaled_array = scaler.transform(num_df_slice)
             processed_feature_parts.append(numerical_features_scaled_array)
             logger.info(f"PREDICT_LOCAL_SCALE: Características numéricas escaladas (shape): {numerical_features_scaled_array.shape}")
-
         if _CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING:
+            # ... (lógica de OHE igual, con logs)
             cat_df_slice = current_input_df_for_preprocessing[_CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING]
             categorical_features_encoded_sparse = ohe.transform(cat_df_slice)
             categorical_features_encoded_dense_array = categorical_features_encoded_sparse.toarray()
@@ -305,59 +310,75 @@ def predict_price_with_local_tf_layer(
         final_input_array_for_model = np.concatenate(processed_feature_parts, axis=1)
         logger.info(f"PREDICT_LOCAL_COMBINE: Array final para modelo (shape): {final_input_array_for_model.shape}")
 
+        # --- NUEVA VERIFICACIÓN DE FORMA ---
+        EXPECTED_NUM_FEATURES = 4865 # Según la salida de saved_model_cli
+        if final_input_array_for_model.shape[1] != EXPECTED_NUM_FEATURES:
+            # ... (bloque de error y logs de verificación de forma igual que en la respuesta anterior) ...
+            logger.error(f"¡¡¡DESAJUSTE DE SHAPE EN LA ENTRADA DEL MODELO!!!")
+            logger.error(f"    Modelo espera: {EXPECTED_NUM_FEATURES} características.")
+            logger.error(f"    Array preprocesado tiene: {final_input_array_for_model.shape[1]} características.")
+            logger.error(f"    Esto usualmente significa un problema en el mapeo de características desde 'card_data_series' o en la configuración de las columnas numéricas/categóricas que se pasan a los preprocesadores (scaler/ohe).")
+            if '_NUMERICAL_COLS_FOR_MODEL_PREPROCESSING' in globals() and _NUMERICAL_COLS_FOR_MODEL_PREPROCESSING and 'numerical_features_scaled_array' in locals():
+                logger.debug(f"    Shape de características numéricas escaladas: {numerical_features_scaled_array.shape}")
+            if '_CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING' in globals() and _CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING and 'categorical_features_encoded_dense_array' in locals():
+                logger.debug(f"    Shape de características categóricas OHE: {categorical_features_encoded_dense_array.shape}")
+            st.error(f"Error Crítico de Preprocesamiento: Discrepancia en el número de características para el modelo. "
+                     f"Se esperaban {EXPECTED_NUM_FEATURES}, pero se generaron {final_input_array_for_model.shape[1]}. "
+                     "Por favor, revisa la configuración y la lógica de preprocesamiento en los logs.")
+            return None
+        # --- FIN DE NUEVA VERIFICACIÓN DE FORMA ---
+
         # --- PASO 4: Realizar Predicción con TFSMLayer ---
+        # ... (lógica de predicción igual que en la respuesta anterior, usando _MODEL_INPUT_TENSOR_KEY_NAME y _MODEL_OUTPUT_TENSOR_KEY_NAME)
         final_input_tensor_for_model = tf.convert_to_tensor(final_input_array_for_model, dtype=tf.float32)
         logger.info(f"PREDICT_LOCAL_TENSOR: Tensor de entrada para TFSMLayer (shape): {final_input_tensor_for_model.shape}, dtype: {final_input_tensor_for_model.dtype}")
-
         if _MODEL_INPUT_TENSOR_KEY_NAME:
             model_input_feed_dict = {_MODEL_INPUT_TENSOR_KEY_NAME: final_input_tensor_for_model}
             logger.info(f"PREDICT_LOCAL_CALL: Llamando a TFSMLayer con diccionario de entrada: Clave='{_MODEL_INPUT_TENSOR_KEY_NAME}'")
-            raw_prediction_output_dict = model_layer(model_input_feed_dict)
+            raw_prediction_output = model_layer(model_input_feed_dict)
         else:
             logger.info("PREDICT_LOCAL_CALL: Llamando a TFSMLayer con tensor de entrada directo.")
-            raw_prediction_output_dict = model_layer(final_input_tensor_for_model)
+            raw_prediction_output = model_layer(final_input_tensor_for_model)
+        logger.info(f"PREDICT_LOCAL_RAW_OUT: Salida cruda de TFSMLayer (tipo {type(raw_prediction_output)}): {raw_prediction_output}")
 
-        logger.info(f"PREDICT_LOCAL_RAW_OUT: Salida cruda de TFSMLayer (tipo {type(raw_prediction_output_dict)}): {raw_prediction_output_dict}")
-
-        if not isinstance(raw_prediction_output_dict, dict):
-            if tf.is_tensor(raw_prediction_output_dict):
-                logger.info("PREDICT_LOCAL_EXTRACT: TFSMLayer devolvió un tensor directamente.")
-                predicted_value_tensor = raw_prediction_output_dict
-            else: # ... (error)
-                logger.error(f"PREDICT_LOCAL_EXTRACT_FAIL: Salida de TFSMLayer no es ni dict ni tensor, es {type(raw_prediction_output_dict)}.")
+        if not isinstance(raw_prediction_output, dict):
+            if tf.is_tensor(raw_prediction_output):
+                predicted_value_tensor = raw_prediction_output
+            else:
+                logger.error(f"PREDICT_LOCAL_EXTRACT_FAIL: Salida de TFSMLayer no es ni dict ni tensor, es {type(raw_prediction_output)}.")
                 st.error("Error Interno: Formato de salida del modelo local inesperado.")
                 return None
-        elif not raw_prediction_output_dict: # ... (error)
+        elif not raw_prediction_output:
             logger.error("PREDICT_LOCAL_EXTRACT_FAIL: El diccionario de salida de TFSMLayer está vacío.")
             st.error("Error Interno: El modelo local devolvió una salida vacía.")
             return None
-        elif _MODEL_OUTPUT_TENSOR_KEY_NAME not in raw_prediction_output_dict: # ... (error)
-            available_keys = list(raw_prediction_output_dict.keys())
+        elif _MODEL_OUTPUT_TENSOR_KEY_NAME not in raw_prediction_output:
+            available_keys = list(raw_prediction_output.keys())
             logger.error(f"PREDICT_LOCAL_EXTRACT_FAIL: La clave de salida configurada '{_MODEL_OUTPUT_TENSOR_KEY_NAME}' "
                            f"NO se encuentra en el diccionario de salida de TFSMLayer. Claves disponibles: {available_keys}")
             st.error(f"Error Interno: Clave de salida del modelo local ('{_MODEL_OUTPUT_TENSOR_KEY_NAME}') no encontrada. Disponibles: {available_keys}")
             return None
         else:
-            predicted_value_tensor = raw_prediction_output_dict[_MODEL_OUTPUT_TENSOR_KEY_NAME]
-            logger.info(f"PREDICT_LOCAL_EXTRACT: Tensor de predicción extraído usando la clave '{_MODEL_OUTPUT_TENSOR_KEY_NAME}'. Shape: {predicted_value_tensor.shape}")
-
+            predicted_value_tensor = raw_prediction_output[_MODEL_OUTPUT_TENSOR_KEY_NAME]
+        logger.info(f"PREDICT_LOCAL_EXTRACT: Tensor de predicción extraído (usando clave '{_MODEL_OUTPUT_TENSOR_KEY_NAME}' si es dict). Shape: {predicted_value_tensor.shape}")
+        
         if predicted_value_tensor.shape == (1, 1) or predicted_value_tensor.shape == (1,):
             predicted_value_numeric = predicted_value_tensor.numpy()[0][0] if len(predicted_value_tensor.shape) == 2 else predicted_value_tensor.numpy()[0]
             logger.info(f"PREDICT_LOCAL_NUMERIC: Valor de predicción numérico extraído: {predicted_value_numeric}")
-        else: # ... (error)
+        else:
             logger.error(f"PREDICT_LOCAL_NUMERIC_FAIL: Shape del tensor de predicción inesperado: {predicted_value_tensor.shape}. Se esperaba (1,1) o (1,).")
             st.error("Error Interno: Formato del valor de predicción inesperado.")
             return None
-
-        # --- PASO 5: Postprocesar predicción ---
+            
+        # --- PASO 5: Postprocesar predicción (si es necesario) ---
         if _TARGET_PREDICTED_IS_LOG_TRANSFORMED:
             final_predicted_price = np.exp(predicted_value_numeric)
-            logger.info(f"PREDICT_LOCAL_POSTPROC: Predicción post-exp (deshaciendo log): {final_predicted_price}")
         else:
             final_predicted_price = predicted_value_numeric
-            logger.info(f"PREDICT_LOCAL_POSTPROC: Predicción final (sin postprocesamiento de log): {final_predicted_price}")
+        logger.info(f"PREDICT_LOCAL_POSTPROC: Predicción final: {final_predicted_price}")
         return float(final_predicted_price)
-    except Exception as e: # ... (error)
+
+    except Exception as e:
         logger.error(f"PREDICT_LOCAL_EXCEPTION: Excepción durante preprocesamiento o predicción local: {e}", exc_info=True)
         st.error(f"Error Crítico Durante la Predicción Local: {e}")
         import traceback
@@ -370,7 +391,6 @@ def predict_price_with_local_tf_layer(
 logger.info("APP_INIT: Cargando datos iniciales de BigQuery.")
 LATEST_SNAPSHOT_TABLE = get_latest_snapshot_table(bq_client)
 all_card_metadata_df = get_card_metadata_with_base_names(bq_client)
-
 if not LATEST_SNAPSHOT_TABLE or all_card_metadata_df.empty:
     logger.critical("APP_INIT_FAIL: Datos esenciales de BigQuery (snapshot o metadatos) no cargados. La aplicación no puede continuar sin ellos.")
     st.error("Error Crítico: No se pudieron cargar los datos esenciales de BigQuery (precios o metadatos de cartas). La aplicación se detendrá.")
@@ -402,8 +422,8 @@ selected_rarities = st.sidebar.multiselect("Rareza(s):", rarity_options_list, ke
 sort_order = st.sidebar.radio("Ordenar por Precio (Trend):", ("Ascendente", "Descendente"), index=1, key="rd_sort_order_v3")
 sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 
+
 # --- Función para Obtener Datos de Cartas ---
-# ... (sin cambios, usa la versión robusta anterior: fetch_card_data_from_bq) ...
 @st.cache_data(ttl=600)
 def fetch_card_data_from_bq(
     _client: bigquery.Client,
@@ -415,6 +435,7 @@ def fetch_card_data_from_bq(
     sort_direction: str,
     full_metadata_df_param: pd.DataFrame
 ) -> pd.DataFrame:
+    # ... (sin cambios) ...
     logger.info(f"FETCH_BQ_DATA: Iniciando con filtros - Supertype:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rarities:{len(rarities_ui_filter)}")
     if not latest_table_path:
         logger.error("FETCH_BQ_DATA_FAIL: 'latest_table_path' (tabla de precios snapshot) es None. No se puede consultar.")
@@ -469,15 +490,15 @@ def fetch_card_data_from_bq(
         return pd.DataFrame()
 
 # --- Obtener datos para la tabla principal ---
-# ... (sin cambios) ...
 results_df = fetch_card_data_from_bq(
     bq_client, LATEST_SNAPSHOT_TABLE, selected_supertype, selected_sets,
     selected_names_to_filter, selected_rarities, sort_sql, all_card_metadata_df
 )
 logger.info(f"MAIN_APP: DataFrame 'results_df' cargado con {len(results_df)} filas después de aplicar filtros y consultar BQ.")
 
+
 # --- Área Principal: Visualización de Resultados (AgGrid) ---
-# ... (sin cambios, usa la versión robusta anterior) ...
+# ... (sin cambios) ...
 st.header("Resultados de Cartas")
 if 'selected_card_id_from_grid' not in st.session_state:
     st.session_state.selected_card_id_from_grid = None
@@ -520,7 +541,7 @@ else:
     logger.info("AGGRID_RENDERING: No hay datos para mostrar en AgGrid (results_df_for_aggrid_display está vacío).")
 
 # --- Lógica de Manejo de Clic en AgGrid ---
-# ... (sin cambios, usa la versión robusta anterior) ...
+# ... (sin cambios) ...
 if grid_response:
     logger.debug(f"AGGRID_HANDLER: Procesando grid_response. Tipo de selected_rows: {type(grid_response.get('selected_rows'))}")
     newly_selected_id_from_grid_click = None
@@ -564,7 +585,7 @@ if grid_response:
         logger.debug(f"AGGRID_HANDLER_NO_CHANGE: Sin cambio de selección (o nueva selección es igual a la actual), no se re-ejecuta.")
 
 # --- Sección de Detalle de Carta y Predicción ---
-# ... (sin cambios, usa la versión robusta anterior) ...
+# ... (sin cambios, con la lógica del botón de predicción y la llamada a predict_price_with_local_tf_layer) ...
 st.divider()
 st.header("Detalle de Carta Seleccionada")
 card_to_display_in_detail_section = None
@@ -666,7 +687,6 @@ else:
         st.info("Selecciona una carta de la tabla de resultados para ver sus detalles y opciones de estimación de precio.")
 
 # --- Mensajes finales ---
-# ... (sin cambios) ...
 if not results_df_for_aggrid_display.empty:
     pass
 elif not results_df.empty and results_df_for_aggrid_display.empty :
@@ -678,4 +698,4 @@ else:
         st.info("No se encontraron cartas que coincidan con los filtros de búsqueda seleccionados. Prueba con criterios más amplios.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v0.3 | TF: {tf.__version__}") # Incrementé versión de ejemplo
+st.sidebar.caption(f"Pokémon TCG Explorer v0.5 | TF: {tf.__version__}")
