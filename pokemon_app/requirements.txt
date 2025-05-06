@@ -3,3 +3,4 @@ pandas
 google-cloud-bigquery
 google-auth
 db-dtypes
+streamlit-aggrid
