@@ -17,16 +17,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Constantes y Configuración de GCP ---
+# --- Constantes y Configuración de GCP ---
 try:
-    G: {e}", exc_info=True)
-        st.error(f"Error al conectar con BigQueryCP_PROJECT_ID = st.secrets["gcp_service_account"]["project_id"]
-except KeyError: {e}.")
-        return None
+    # Intentar obtener el project_id de los secrets
+    GCP_PROJECT_ID = st.secrets["gcp_service_account"]["project_id"]
+    logger.info(f"CONFIG: GCP Project ID '{GCP_PROJECT_ID}' cargado desde secrets.")
 
-bq_client = connect_to_bigquery()
-if bq:
-    logger.critical("CRITICAL: 'project_id' no encontrado en los secrets.")
-    st_client is None: st.stop()
+except KeyError:
+    # Error si 'project_id' (o 'gcp_service_account') no existe en secrets.toml
+    logger.critical("CRITICAL_CONFIG: 'project_id' o sección [gcp_service_account] no encontrado en los secrets de Streamlit.")
+    st.error("Error Crítico: 'project_id' no encontrado en la configuración de secretos ([gcp_service_account]). Verifica tu archivo secrets.toml o la configuración de Secrets en Streamlit Cloud.")
+    st.stop() # Detener la aplicación si no se puede obtener el project_id
+
+except Exception as e:
+    # Capturar cualquier otro error inesperado al leer los secrets
+    logger.critical(f"CRITICAL_CONFIG: Error inesperado al leer secrets: {e}", exc_info=True)
+    st.error(f"Error Crítico: Ocurrió un error inesperado al leer la configuración de secretos: {e}")
+    st.stop() # Detener la aplicación
+
+# --- Definir otras constantes que dependen de GCP_PROJECT_ID ---
+BIGQUERY_DATASET = "pokemon_dataset"
+CARD_METADATA_TABLE = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.card_metadata"
+MAX_ROWS_NO_FILTER = 200 # Límite de filas a mostrar en AgGrid si no hay filtros específicos
 
 # --- Funciones Auxiliares ---
 @st.cache_.error("Error: 'project_id' no encontrado en los secrets.")
