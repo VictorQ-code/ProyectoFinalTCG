@@ -212,12 +212,11 @@ results_df = fetch_card_data(bq_client, LATEST_SNAPSHOT_TABLE, selected_supertyp
 # --- Área Principal: Visualización de Resultados ---
 st.header("Resultados")
 
-# Inicializar el estado de sesión para la carta seleccionada
 if 'selected_card_id_from_grid' not in st.session_state:
     st.session_state.selected_card_id_from_grid = None
 
 if not results_df.empty:
-    # Preparar DataFrame para AgGrid
+    # ... (Preparación de display_df_for_aggrid y GridOptionsBuilder igual que antes) ...
     display_columns_mapping = {
         'id': 'ID', 'pokemon_name': 'Nombre Carta', 'supertype': 'Categoría',
         'set_name': 'Set', 'rarity': 'Rareza', 'artist': 'Artista', 'price': 'Precio (Trend €)'
@@ -232,12 +231,9 @@ if not results_df.empty:
              lambda x: f"€{x:.2f}" if pd.notna(x) else "N/A"
          )
 
-    # Configuración de AgGrid
     gb = GridOptionsBuilder.from_dataframe(display_df_for_aggrid)
     gb.configure_selection(selection_mode='single', use_checkbox=False)
-    gb.configure_grid_options(domLayout='normal') # Necesario para control de altura
-    # Opcional: Hacer la columna ID no visible para el usuario pero disponible en los datos
-    # gb.configure_column("ID", hide=True) 
+    gb.configure_grid_options(domLayout='normal')
     gridOptions = gb.build()
 
     st.write("Haz clic en una fila de la tabla para ver sus detalles:")
@@ -250,17 +246,24 @@ if not results_df.empty:
         update_mode=GridUpdateMode.MODEL_CHANGED, 
         fit_columns_on_grid_load=False, 
         allow_unsafe_jscode=True, 
-        key='pokemon_results_aggrid_final', # Key actualizada
-        # No usar reload_data=True a menos que sea estrictamente necesario, puede causar bucles.
+        key='pokemon_results_aggrid_final_v2', # Nueva key
     )
 
+    # --- CORRECCIÓN AQUÍ ---
     newly_selected_id = None
-    if grid_response['selected_rows']:
-        # AgGrid devuelve la fila con los nombres de columna de display_df_for_aggrid.
-        # La columna 'ID' en display_df_for_aggrid contiene el 'id' original de la carta.
-        newly_selected_id = grid_response['selected_rows'][0]['ID']
+    # Verificar que grid_response no sea None y que 'selected_rows' exista y sea una lista no vacía
+    if grid_response and \
+       isinstance(grid_response.get('selected_rows'), list) and \
+       grid_response['selected_rows']: # Esto evalúa si la lista no está vacía
+        try:
+            # Asumimos que 'ID' es la columna en display_df_for_aggrid que contiene el id original
+            newly_selected_id = grid_response['selected_rows'][0]['ID']
+        except (KeyError, IndexError) as e:
+            logging.warning(f"Error al acceder a la fila seleccionada de AgGrid: {e}")
+            newly_selected_id = None # Asegurar que es None si hay error
+    # --- FIN DE LA CORRECCIÓN ---
 
-    # Solo actualiza el estado y re-ejecuta si la selección cambió
+
     if newly_selected_id and newly_selected_id != st.session_state.selected_card_id_from_grid:
         st.session_state.selected_card_id_from_grid = newly_selected_id
         st.experimental_rerun()
@@ -268,22 +271,17 @@ if not results_df.empty:
     st.divider()
     st.header("Detalle de Carta")
 
-    card_to_display = None # Esta será una Serie de Pandas de la carta a mostrar
+    # ... (El resto de la lógica de Detalle de Carta debería estar bien si la corrección anterior funciona) ...
+    card_to_display = None 
     
-    # Priorizar la selección del grid
     if st.session_state.selected_card_id_from_grid:
-        # Buscar en el results_df original usando el 'id' (valor de la columna 'ID' de la tabla)
         matched_df = results_df[results_df['id'] == st.session_state.selected_card_id_from_grid]
         if not matched_df.empty:
-            card_to_display = matched_df.iloc[0] # Tomar la primera fila (Serie)
+            card_to_display = matched_df.iloc[0] 
             
-    # Si no hay selección del grid (o no se encontró), pero hay resultados, tomar el primero
-    # Esto cubre la carga inicial o cuando los filtros cambian sin un clic en la tabla
     if card_to_display is None and not results_df.empty:
         card_to_display = results_df.iloc[0]
-        # Si estamos mostrando el primero por defecto, actualizamos el session_state
-        # para que refleje esto (si es que no había una selección de grid).
-        if st.session_state.selected_card_id_from_grid is None and 'id' in card_to_display:
+        if st.session_state.selected_card_id_from_grid is None and 'id' in card_to_display and pd.notna(card_to_display['id']): # Asegurar que ID no es NaN
             st.session_state.selected_card_id_from_grid = card_to_display['id']
 
     if card_to_display is not None and isinstance(card_to_display, pd.Series) and not card_to_display.empty:
@@ -317,7 +315,7 @@ if not results_df.empty:
     else:
         st.info("Haz clic en una carta en la tabla de resultados para ver sus detalles o aplica filtros para ver cartas.")
 
-else: # Si results_df está vacío desde el principio
+else: 
     if bq_client and LATEST_SNAPSHOT_TABLE:
         st.info("No se encontraron cartas con los filtros seleccionados.")
 
