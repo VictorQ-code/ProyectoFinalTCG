@@ -140,29 +140,25 @@ sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 @st.cache_data(ttl=600) # Cachea los datos filtrados por 10 minutos
 def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pokemons: list, rarities: list, sort: str) -> pd.DataFrame:
     """Construye y ejecuta la consulta dinámica para obtener datos de cartas."""
-    # Nombres de columna corregidos: id, images_large, cm_trendPrice
-    # Alias usados: image_url, price
     base_query = f"""
     SELECT
-        c.id,                   # Identificador único
+        c.id,
         c.name AS pokemon_name,
         c.set_name,
         c.rarity,
         c.artist,
-        c.images_large AS image_url, # URL de la imagen (usando alias)
-        p.cm_trendPrice AS price    # Precio a usar (usando alias) - CAMBIA cm_trendPrice si prefieres otro
+        c.images_large AS image_url,
+        p.cm_trendPrice AS price
     FROM
         `{CARD_METADATA_TABLE}` AS c
     JOIN
-        `{latest_table}` AS p ON c.id = p.id # Une usando la columna 'id'
+        `{latest_table}` AS p ON c.id = p.id
     WHERE 1=1
     """
 
     params = []
-    # param_types = [] # Esta variable no se usa, se puede eliminar si no se necesita para algo más
     filter_clauses = []
 
-    # Añadir filtros dinámicamente
     if sets:
         filter_clauses.append("c.set_name IN UNNEST(@sets)")
         params.append(bigquery.ArrayQueryParameter("sets", "STRING", sets))
@@ -176,33 +172,36 @@ def fetch_card_data(_client: bigquery.Client, latest_table: str, sets: list, pok
     if filter_clauses:
         base_query += " AND " + " AND ".join(filter_clauses)
 
-    # Añadir ordenamiento por el alias 'price'
     base_query += f" ORDER BY price {sort}"
 
-    # Configurar la consulta parametrizada
     job_config = bigquery.QueryJobConfig(query_parameters=params)
 
-    # --- LÍNEA DE LOGGING CORREGIDA ---
-    param_names_types = [(p.name, p.type_) for p in params]
-    logging.info(f"Ejecutando consulta: {base_query} con parámetros (nombre, tipo): {param_names_types}")
+    # --- LÍNEA DE LOGGING CORREGIDA Y MEJORADA ---
+    param_details = []
+    for p in params:
+        if isinstance(p, bigquery.ArrayQueryParameter):
+            param_details.append((p.name, f"ARRAY<{p.parameter_type.type_}>", p.values))
+        elif isinstance(p, bigquery.ScalarQueryParameter): # Por si se usa en el futuro
+            param_details.append((p.name, p.type_, p.value))
+        else: # Manejo genérico por si acaso
+            param_details.append((p.name, "UNKNOWN_TYPE", "UNKNOWN_VALUE"))
+    logging.info(f"Ejecutando consulta: {base_query} con parámetros (nombre, tipo, valores): {param_details}")
     # --- FIN DE LA CORRECCIÓN ---
 
     try:
         query_job = _client.query(base_query, job_config=job_config)
         results_df = query_job.to_dataframe()
-        # Convierte la columna de precio a numérico, errores a NaN
         results_df['price'] = pd.to_numeric(results_df['price'], errors='coerce')
         logging.info(f"Consulta ejecutada. Se obtuvieron {len(results_df)} filas.")
         return results_df
     except Exception as e:
-         # Verifica específicamente el error de db-dtypes
         if "db-dtypes" in str(e):
              st.error("Error: Falta la librería 'db-dtypes'. Asegúrate de que esté en requirements.txt y reinicia la app.")
              logging.error("Error de dependencia: db-dtypes no encontrado al ejecutar consulta.", exc_info=True)
         else:
             st.error(f"Error al ejecutar la consulta principal: {e}. Revisa los nombres de columna y tablas en la consulta.")
             logging.error(f"Error al ejecutar la consulta principal: {e}", exc_info=True)
-        return pd.DataFrame() # Retorna DataFrame vacío en caso de error
+        return pd.DataFrame()
 
 # Ejecutar la consulta con los filtros actuales
 results_df = fetch_card_data(
