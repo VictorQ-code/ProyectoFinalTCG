@@ -18,14 +18,15 @@ logger = logging.getLogger(__name__)
 # --- Constantes y Configuración de GCP ---
 try:
     GCP_PROJECT_ID = st.secrets["gcp_service_account"]["project_id"]
+    logger.info(f"CONFIG: GCP Project ID '{GCP_PROJECT_ID}' cargado.")
 except KeyError:
-    logger.critical("CRITICAL: 'project_id' no encontrado en los secrets.")
-    st.error("Error: 'project_id' no encontrado en los secrets.")
-    st.stop()
+    logger.critical("CRITICAL_CONFIG: 'project_id' o [gcp_service_account] no encontrado en secrets.")
+    st.error("Error Crítico: Configuración de 'project_id' no encontrada. Revisa Secrets.")
+    st.stop() 
 except Exception as e:
-    logger.error(f"CRITICAL: Error inesperado al leer secrets: {e}", exc_info=True)
-    st.error(f"Error inesperado al leer secrets: {e}")
-    st.stop()
+    logger.critical(f"CRITICAL_CONFIG: Error inesperado leyendo secrets: {e}", exc_info=True)
+    st.error(f"Error Crítico leyendo Secrets: {e}")
+    st.stop() 
 
 BIGQUERY_DATASET = "pokemon_dataset"
 CARD_METADATA_TABLE = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.card_metadata"
@@ -118,7 +119,6 @@ st.title("Explorador de Cartas Pokémon TCG")
 st.sidebar.header("Filtros y Opciones")
 options_df_for_filters = all_card_metadata_df.copy()
 
-# ... (Lógica de filtros de la barra lateral igual que antes, usando keys únicas _v3) ...
 supertype_options_list = sorted(options_df_for_filters['supertype'].dropna().unique().tolist())
 select_supertype_options = ["Todos"] + supertype_options_list if supertype_options_list else ["Todos"]
 selected_supertype = st.sidebar.selectbox("Categoría:", select_supertype_options, index=0, key="sb_supertype_filter_v3") 
@@ -138,12 +138,10 @@ selected_rarities = st.sidebar.multiselect("Rareza(s):", rarity_options_list, ke
 sort_order = st.sidebar.radio("Ordenar por Precio (Trend):", ("Ascendente", "Descendente"), index=1, key="rd_sort_order_v3") 
 sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 
-
 @st.cache_data(ttl=600)
 def fetch_card_data(_client: bigquery.Client, latest_table_path: str, supertype_ui_filter: str | None,
                     sets_ui_filter: list, names_ui_filter: list, rarities_ui_filter: list,
                     sort_direction: str, full_metadata_df: pd.DataFrame) -> pd.DataFrame:
-    # ... (lógica interna de fetch_card_data igual que antes) ...
     logger.info(f"FETCH_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
     ids_to_query_df = full_metadata_df.copy()
     if supertype_ui_filter and supertype_ui_filter != "Todos": ids_to_query_df = ids_to_query_df[ids_to_query_df['supertype'] == supertype_ui_filter]
@@ -227,11 +225,9 @@ if grid_response:
     # --- LÓGICA ADAPTADA PARA DataFrame o Lista ---
     if isinstance(selected_rows_data, pd.DataFrame) and not selected_rows_data.empty:
         try:
-            # Acceder a la primera (y única) fila seleccionada y luego a la columna 'ID'
-            first_row = selected_rows_data.iloc[0] 
-            # Verificar si 'ID' existe en el índice o columnas de la Serie
-            if 'ID' in first_row:
-                newly_selected_id_from_grid = first_row['ID'] 
+            first_selected_row_series = selected_rows_data.iloc[0] 
+            if 'ID' in first_selected_row_series:
+                newly_selected_id_from_grid = first_selected_row_series['ID'] 
             else:
                 logger.warning("AGGRID_HANDLER: Columna 'ID' no encontrada en la fila seleccionada del DataFrame.")
 
@@ -239,7 +235,7 @@ if grid_response:
                  logger.info(f"AGGRID_HANDLER (DataFrame): Fila seleccionada válida. ID: {newly_selected_id_from_grid}")
             else:
                  logger.warning("AGGRID_HANDLER: 'ID' es None o vacío después de intentar extraerlo del DataFrame.")
-                 newly_selected_id_from_grid = None # Asegurar que sea None si el ID está vacío
+                 newly_selected_id_from_grid = None 
                  
         except IndexError:
             logger.warning("AGGRID_HANDLER: Error de índice al acceder a .iloc[0] (DataFrame vacío inesperadamente?).")
@@ -247,22 +243,16 @@ if grid_response:
         except Exception as e:
             logger.error(f"AGGRID_HANDLER: Error inesperado procesando fila (DataFrame): {e}", exc_info=True)
             newly_selected_id_from_grid = None 
-    elif isinstance(selected_rows_data, list) and selected_rows_data: # Mantener Fallback por si acaso
+    elif isinstance(selected_rows_data, list) and selected_rows_data: # Fallback por si acaso
         try: 
             row_data = selected_rows_data[0]
             if isinstance(row_data, dict):
                 newly_selected_id_from_grid = row_data.get('ID') 
-                if newly_selected_id_from_grid:
-                     logger.info(f"AGGRID_HANDLER (List): Fila seleccionada válida. ID: {newly_selected_id_from_grid}")
-                else:
-                     logger.warning("AGGRID_HANDLER (List): 'ID' no encontrado o None.")
-            else:
-                logger.warning(f"AGGRID_HANDLER (List): Fila no es dict: {type(row_data)}")
-        except IndexError: 
-            logger.warning("AGGRID_HANDLER (List): selected_rows vacía.")
-        except Exception as e: 
-            logger.error(f"AGGRID_HANDLER (List): Error inesperado procesando fila: {e}", exc_info=True)
-            newly_selected_id_from_grid = None 
+                if newly_selected_id_from_grid: logger.info(f"AGGRID_HANDLER (List): Fila seleccionada válida. ID: {newly_selected_id_from_grid}")
+                else: logger.warning("AGGRID_HANDLER (List): 'ID' no encontrado o None.")
+            else: logger.warning(f"AGGRID_HANDLER (List): Fila no es dict: {type(row_data)}")
+        except IndexError: logger.warning("AGGRID_HANDLER (List): selected_rows vacía.")
+        except Exception as e: logger.error(f"AGGRID_HANDLER (List): Error inesperado procesando fila: {e}", exc_info=True); newly_selected_id_from_grid = None 
     else:
         logger.debug(f"AGGRID_HANDLER: No hay filas seleccionadas válidas (selected_rows no es DataFrame/lista no vacía o es None).")
     # --- FIN LÓGICA ADAPTADA ---
@@ -274,7 +264,9 @@ if grid_response:
     if newly_selected_id_from_grid is not None and newly_selected_id_from_grid != current_session_id:
         logger.info(f"AGGRID_HANDLER: DETECTADO CAMBIO DE SELECCIÓN! De '{current_session_id}' a '{newly_selected_id_from_grid}'. Actualizando session_state y RE-EJECUTANDO.")
         st.session_state.selected_card_id_from_grid = newly_selected_id_from_grid
-        st.experimental_rerun() # <<<--- ¡ESENCIAL!
+        # ----- ¡LA CORRECCIÓN ESTÁ AQUÍ! -----
+        st.rerun() 
+        # ----- FIN DE LA CORRECCIÓN -----
     else:
         logger.debug(f"AGGRID_HANDLER: Sin cambio de selección o nueva selección es None. No se re-ejecuta por esta vía.")
 # --- FIN DE LÓGICA DE MANEJO DE CLIC ---
@@ -306,7 +298,6 @@ if card_to_display_details is None and not results_df.empty:
             if st.session_state.get('selected_card_id_from_grid') != fallback_id : 
                 logger.info(f"DETAIL_DISPLAY: Actualizando session_state con ID de fallback '{fallback_id}' (era '{st.session_state.get('selected_card_id_from_grid')}').")
                 st.session_state.selected_card_id_from_grid = fallback_id
-                # No llamar rerun desde el fallback
 
 if card_to_display_details is not None and isinstance(card_to_display_details, pd.Series) and not card_to_display_details.empty:
     logger.info(f"DETAIL_DISPLAY: RENDERIZANDO detalles para: {card_to_display_details.get('pokemon_name')} (ID: {card_to_display_details.get('id')})")
@@ -345,4 +336,4 @@ else:
     if bq_client and LATEST_SNAPSHOT_TABLE:
         st.info("No se encontraron cartas con los filtros seleccionados.")
 
-st.sidebar.info("Pokémon TCG Explorer - Debug v5 DataFrame Fix")
+st.sidebar.info("Pokémon TCG Explorer - Rerun Fix")
