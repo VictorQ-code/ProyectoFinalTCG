@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from google.cloud import bigquery
-from google.oauth2 import service', '.join(missing_keys)}")
+from google.oauth2 import service', '.join(missing_keys)
              st.error(f"Error: Faltan claves: {_account
 import re
 import logging
