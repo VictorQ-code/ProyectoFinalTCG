@@ -1,14 +1,10 @@
 import streamlit as st
 import pandas as pd
 from google.cloud import bigquery
-from google.oauth2 import service', '.join(missing_keys)
-             st.error(f"Error: Faltan claves: {_account
+from google.oauth2 import service_account 
 import re
 import logging
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdate', '.join(missing_keys)}")
-             return None
-        creds = service_account.Credentials.fromMode, DataReturnMode
-
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 # --- Configuración Inicial ---
 st.set_page_config(layout="wide_service_account_info(creds_json)
         client = bigquery.Client(credentials=cre", page_title="Pokémon TCG Explorer")
