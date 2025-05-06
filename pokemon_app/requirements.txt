@@ -5,3 +5,6 @@ google-auth
 db-dtypes
 streamlit-aggrid
 google-cloud-bigquery-storage
+tensorflow
+scikit-learn
+numpy
