@@ -1,4 +1,4 @@
-             logger.error(f"CONNECT_BQ: Faltan claves: {python
+logger.error(f"CONNECT_BQ: Faltan claves: {python
 import streamlit as st
 import pandas as pd
 from google.cloud import bigquery
