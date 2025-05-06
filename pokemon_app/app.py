@@ -1,27 +1,20 @@
 import streamlit as st
-d - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger(__name__)
 import pandas as pd
 from google.cloud import bigquery
-from google.oauth2 import service_account 
+from google.oauth2 import service_account # Corregido de antes
 import re
 import logging
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+
 # --- Configuración Inicial ---
-st.set_page_config(layout="wide_service_account_info(creds_json)
-        client = bigquery.Client(credentials=cre", page_title="Pokémon TCG Explorer")
+st.set_page_config(layout="wide", page_title="Pokémon TCG Explorer") # Corregido de antes
+# !!! La configuración de logging viene DESPUÉS de las importaciones !!!
 logging.basicConfig(
     level=logging.INFO,
-ds, project=GCP_PROJECT_ID)
-        logger.info("CONNECT_BQ: Conexión OK.")    format='%(asctime)s - %(levelname)s - %(module)s - %(funcName)s - %(lineno)d - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(module)s - %(funcName)s - %(lineno)d - %(message)s',
     handlers=[logging.StreamHandler()]
 )
-logger
-        return client
-    except Exception as e:
-        logger.error(f"CONNECT_BQ: Error = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # --- Constantes y Configuración de GCP ---
 try:
