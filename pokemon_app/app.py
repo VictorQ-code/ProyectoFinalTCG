@@ -308,7 +308,7 @@ def predict_price_with_local_tf_layer(
         logger.info(f"PREDICT_LOCAL_TENSOR: Tensor de entrada para TFSMLayer (shape): {final_input_tensor_for_model.shape}, dtype: {final_input_tensor_for_model.dtype}")
         if _MODEL_INPUT_TENSOR_KEY_NAME:
             model_input_feed_dict = {_MODEL_INPUT_TENSOR_KEY_NAME: final_input_tensor_for_model}
-            raw_prediction_output = model_layer(model_input_feed_dict)
+            raw_prediction_output = model_layer(**model_input_feed_dict)
         else:
             raw_prediction_output = model_layer(final_input_tensor_for_model)
         logger.info(f"PREDICT_LOCAL_RAW_OUT: Salida cruda de TFSMLayer (tipo {type(raw_prediction_output)}): {raw_prediction_output}")
