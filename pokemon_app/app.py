@@ -252,12 +252,17 @@ def fetch_card_data(_client: bigquery.Client, latest_table_path: str, supertype_
 results_df = fetch_card_data(bq_client, LATEST_SNAPSHOT_TABLE, selected_supertype, selected_sets,
                              selected_names_to_filter, selected_rarities, sort_sql, all_card_metadata_df)
 
+# ... (Todo el código anterior hasta la sección de AgGrid) ...
+
 # --- Área Principal: Visualización de Resultados ---
 st.header("Resultados")
 
-# Inicializar estado de sesión para la carta seleccionada en AgGrid
+# Inicializar estado de sesión para la carta seleccionada si no existe
 if 'selected_card_id_from_grid' not in st.session_state:
     st.session_state.selected_card_id_from_grid = None
+if 'last_selected_card_from_grid_for_rerun_check' not in st.session_state: # Para evitar reruns si AgGrid devuelve lo mismo
+    st.session_state.last_selected_card_from_grid_for_rerun_check = None
+
 
 # DataFrame para mostrar en AgGrid (potencialmente limitado si no hay filtros)
 results_df_for_aggrid_display = results_df 
@@ -271,12 +276,10 @@ if is_initial_unfiltered_load and len(results_df) > MAX_ROWS_NO_FILTER:
 
 
 if not results_df_for_aggrid_display.empty:
-    # Preparar DataFrame para AgGrid
     display_columns_mapping = {
         'id': 'ID', 'pokemon_name': 'Nombre Carta', 'supertype': 'Categoría',
         'set_name': 'Set', 'rarity': 'Rareza', 'artist': 'Artista', 'price': 'Precio (Trend €)'
     }
-    # Asegurar que solo se seleccionan columnas que existen en el df
     cols_in_df = [col for col in display_columns_mapping.keys() if col in results_df_for_aggrid_display.columns]
     final_display_df = results_df_for_aggrid_display[cols_in_df].copy()
     final_display_df.rename(columns=display_columns_mapping, inplace=True)
@@ -290,7 +293,7 @@ if not results_df_for_aggrid_display.empty:
     gb = GridOptionsBuilder.from_dataframe(final_display_df)
     gb.configure_selection(selection_mode='single', use_checkbox=False)
     gb.configure_grid_options(domLayout='normal')
-    gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25) # Paginación más pequeña
+    gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25)
     gridOptions = gb.build()
 
     st.write("Haz clic en una fila de la tabla para ver sus detalles:")
@@ -300,44 +303,69 @@ if not results_df_for_aggrid_display.empty:
         height=500, 
         width='100%',
         data_return_mode=DataReturnMode.AS_INPUT, 
-        update_mode=GridUpdateMode.MODEL_CHANGED, 
+        update_mode=GridUpdateMode.SELECTION_CHANGED, # Cambiado para que solo actualice en selección
         fit_columns_on_grid_load=False, 
         allow_unsafe_jscode=True, 
-        key='pokemon_aggrid_optimized', 
+        key='pokemon_aggrid_sel_optimized', # Nueva key
     )
 
-    newly_selected_id_from_grid = None
+    # --- LÓGICA DE ACTUALIZACIÓN DE SELECCIÓN ---
+    current_selection_in_grid = None
     if grid_response and isinstance(grid_response.get('selected_rows'), list) and grid_response['selected_rows']:
-        try: # 'ID' es el nombre de la columna en final_display_df
-            newly_selected_id_from_grid = grid_response['selected_rows'][0]['ID'] 
+        try: 
+            # 'ID' es el nombre de la columna en final_display_df (que es results_df['id'])
+            current_selection_in_grid = grid_response['selected_rows'][0]['ID'] 
         except (KeyError, IndexError) as e:
-            logging.warning(f"Error al acceder a fila seleccionada de AgGrid: {e}")
+            logging.warning(f"Error al acceder a la fila seleccionada de AgGrid: {e}")
     
-    if newly_selected_id_from_grid and newly_selected_id_from_grid != st.session_state.selected_card_id_from_grid:
-        st.session_state.selected_card_id_from_grid = newly_selected_id_from_grid
-        st.experimental_rerun()
+    # Si la selección del grid ha cambiado REALMENTE desde la última vez que actualizamos el estado de sesión
+    if current_selection_in_grid is not None and \
+       current_selection_in_grid != st.session_state.get('selected_card_id_from_grid'): # Usar .get para evitar KeyError
+        logging.info(f"AgGrid selection changed. New selection ID: {current_selection_in_grid}")
+        st.session_state.selected_card_id_from_grid = current_selection_in_grid
+        # No es necesario un rerun aquí si el resto del script lee de session_state y AgGrid
+        # se actualiza correctamente por sí mismo. Vamos a probar sin rerun explícito primero.
+        # Si los detalles no se actualizan, se puede volver a añadir st.experimental_rerun().
+        # Sin embargo, un rerun puede hacer que AgGrid pierda su estado de scroll/página.
+        # El cambio a update_mode=GridUpdateMode.SELECTION_CHANGED podría ayudar.
+        st.experimental_rerun() # <-- RE-AÑADIDO. Es probable que sea necesario para que la UI se actualice.
+
+    # --- FIN LÓGICA DE ACTUALIZACIÓN ---
 
     st.divider()
     st.header("Detalle de Carta")
 
-    card_to_display_details = None 
+    card_to_display_details = None # Esta será una Serie de Pandas de la carta a mostrar
     
-    if st.session_state.selected_card_id_from_grid:
+    # Priorizar la selección del grid guardada en session_state
+    selected_id_to_show = st.session_state.get('selected_card_id_from_grid') # Usar .get()
+
+    if selected_id_to_show:
         # Buscar en el results_df ORIGINAL (no el limitado/transformado para AgGrid)
-        matched_rows_in_results_df = results_df[results_df['id'] == st.session_state.selected_card_id_from_grid]
+        matched_rows_in_results_df = results_df[results_df['id'] == selected_id_to_show]
         if not matched_rows_in_results_df.empty:
             card_to_display_details = matched_rows_in_results_df.iloc[0]
+            logging.info(f"Mostrando detalles para la carta ID (desde grid/session): {selected_id_to_show}")
+        else:
+            logging.warning(f"ID {selected_id_to_show} de session_state no encontrado en results_df actual.")
+            # Podría pasar si results_df cambió y la carta seleccionada ya no está.
+            # En este caso, se intentará el fallback de abajo.
             
-    # Fallback: si no hay selección de grid, pero hay resultados, mostrar el primero del results_df
+    # Fallback: si no hay selección de grid válida, pero hay resultados, mostrar el primero del results_df
     if card_to_display_details is None and not results_df.empty:
         card_to_display_details = results_df.iloc[0]
-        # Sincronizar session_state si mostramos el primero por defecto
-        if st.session_state.selected_card_id_from_grid is None and \
-           'id' in card_to_display_details and pd.notna(card_to_display_details['id']):
-            st.session_state.selected_card_id_from_grid = card_to_display_details['id']
+        default_id_to_show = card_to_display_details.get('id')
+        logging.info(f"Mostrando detalles para la primera carta por defecto ID: {default_id_to_show}")
+        # Sincronizar session_state si mostramos el primero por defecto y no había selección válida previa
+        # O si el ID seleccionado previamente ya no es válido.
+        if selected_id_to_show is None or \
+           (selected_id_to_show and card_to_display_details.get('id') != selected_id_to_show):
+            if default_id_to_show and pd.notna(default_id_to_show):
+                 st.session_state.selected_card_id_from_grid = default_id_to_show
+
 
     if card_to_display_details is not None and isinstance(card_to_display_details, pd.Series) and not card_to_display_details.empty:
-        # Extraer detalles de la Serie card_to_display_details
+        # ... (El código para mostrar los detalles de card_to_display_details es el mismo) ...
         card_name_detail = card_to_display_details.get('pokemon_name', "N/A")
         card_id_detail = card_to_display_details.get('id', "N/A")
         card_set_detail = card_to_display_details.get('set_name', "N/A")
@@ -359,20 +387,20 @@ if not results_df_for_aggrid_display.empty:
             st.markdown(f"**Categoría:** {card_supertype_detail}")
             st.markdown(f"**Set:** {card_set_detail}")
             st.markdown(f"**Rareza:** {card_rarity_detail}")
-            if pd.notna(card_artist_detail) and card_artist_detail: # Chequear que no sea NaN Y no sea string vacío
+            if pd.notna(card_artist_detail) and card_artist_detail:
                  st.markdown(f"**Artista:** {card_artist_detail}")
             if pd.notna(card_price_detail):
                  st.metric(label="Precio (Trend €)", value=f"€{card_price_detail:.2f}")
             else:
                  st.markdown("**Precio (Trend €):** N/A")
-    else: # Si card_to_display_details es None o vacío
-        st.info("Haz clic en una carta en la tabla de resultados para ver sus detalles, o aplica filtros para ver cartas.")
+    else: 
+        st.info("Haz clic en una carta en la tabla de resultados para ver sus detalles o aplica filtros para ver cartas.")
 
-elif not results_df.empty and results_df_for_aggrid_display.empty : # results_df tiene datos, pero se limitaron a 0 para display
+elif not results_df.empty and results_df_for_aggrid_display.empty : 
     st.info(f"Se encontraron {len(results_df)} resultados. Aplica filtros más específicos para visualizarlos.")
 
-else: # results_df original está vacío
+else: 
     if bq_client and LATEST_SNAPSHOT_TABLE:
         st.info("No se encontraron cartas con los filtros seleccionados.")
 
-st.sidebar.info("Pokémon TCG Explorer - Optimizado")
+# ... (El resto del código, como el footer, permanece igual) ...
