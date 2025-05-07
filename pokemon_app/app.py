@@ -427,21 +427,17 @@ logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 
 
 # --- Inyectar CSS para botones de imagen ---
-# Este CSS solo aplica a botones dentro de columnas
 st.markdown("""
 <style>
 div[data-testid="stColumn"] { /* Puedes añadir estilos aquí si quieres afectar las columnas, ej: gap */ }
-/* Estilo para el botón que contiene la imagen */
 div[data-testid="stColumn"] button {
     display: block !important; margin: auto; padding: 0 !important;
     border: none !important; background-color: transparent !important;
     cursor: pointer !important; text-align: center !important;
 }
-/* Estilo para la imagen dentro del botón */
 div[data-testid="stColumn"] button img {
     display: block; margin: auto; max-width: 100%; height: auto;
 }
-/* Efecto hover para la imagen dentro del botón */
 div[data-testid="stColumn"] button:hover img { opacity: 0.8; }
 /* Ocultar el texto por defecto del botón */
 div[data-testid="stColumn"] button p { display: none; }
@@ -456,7 +452,7 @@ is_initial_unfiltered_load = (not selected_sets and not selected_names_to_filter
 
 # Solo mostrar esta sección si estamos en la carga inicial y hay metadatos
 if is_initial_unfiltered_load and not all_card_metadata_df.empty:
-    st.header("Cartas Destacadas")
+    st.header("Cartas Destacadas") # Mantener el título
 
     # Filtrar por rareza destacada
     special_illustration_rares = all_card_metadata_df[
@@ -483,7 +479,7 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
                      # Mostrar la imagen con st.image (NO es clicable directamente)
                      if pd.notna(image_url_featured) and isinstance(image_url_featured, str):
                          st.image(image_url_featured, width=150, caption=card_set_featured)
-                         # No hay botón aquí para clickear la imagen
+                         # No hay botón aquí para clickear la imagen - Cumple el requisito
 
                      else:
                          # Mostrar un placeholder si la imagen no está disponible
@@ -497,63 +493,89 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
 
 
 # --- Área Principal: Visualización de Resultados (AgGrid) ---
-st.header("Resultados de Cartas")
-if 'selected_card_id_from_grid' not in st.session_state: st.session_state.selected_card_id_from_grid = None
-logger.info(f"AGGRID_RENDERING: ID en session_state ANTES de AgGrid: {st.session_state.get('selected_card_id_from_grid')}")
-results_df_for_aggrid_display = results_df
-if is_initial_unfiltered_load and len(results_df) > MAX_ROWS_NO_FILTER:
-    logger.info(f"AGGRID_RENDERING: Limitando display a {MAX_ROWS_NO_FILTER} filas de {len(results_df)}.")
-    st.info(f"Mostrando los primeros {MAX_ROWS_NO_FILTER} de {len(results_df)} resultados. Aplica filtros.")
-    results_df_for_aggrid_display = results_df.head(MAX_ROWS_NO_FILTER)
-grid_response = None
-if not results_df_for_aggrid_display.empty:
-    display_columns_mapping = {'id': 'ID', 'pokemon_name': 'Nombre Carta', 'supertype': 'Categoría', 'set_name': 'Set', 'rarity': 'Rareza', 'artist': 'Artista', 'price': 'Precio (Trend €)'}
-    cols_in_df_for_display = [col for col in display_columns_mapping.keys() if col in results_df_for_aggrid_display.columns]
-    final_display_df_aggrid = results_df_for_aggrid_display[cols_in_df_for_display].copy()
-    final_display_df_aggrid.rename(columns=display_columns_mapping, inplace=True)
-    price_display_col_name_in_aggrid = display_columns_mapping.get('price')
-    if price_display_col_name_in_aggrid and price_display_col_name_in_aggrid in final_display_df_aggrid.columns:
-         final_display_df_aggrid[price_display_col_name_in_aggrid] = final_display_df_aggrid[price_display_col_name_in_aggrid].apply(lambda x: f"€{x:.2f}" if pd.notna(x) else "N/A")
-    gb = GridOptionsBuilder.from_dataframe(final_display_df_aggrid)
-    gb.configure_selection(selection_mode='single', use_checkbox=False); gb.configure_grid_options(domLayout='normal')
-    gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25)
-    gridOptions = gb.build()
-    st.write("Haz clic en una fila de la tabla para ver sus detalles y opciones de predicción:")
-    grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_vFINAL')
-else: logger.info("AGGRID_RENDERING: No hay datos para mostrar en AgGrid.")
+# Esta sección AHORA SOLO SE MUESTRA SI is_initial_unfiltered_load es False O si results_df NO está vacío.
+if not is_initial_unfiltered_load or not results_df.empty:
+    st.header("Resultados de Cartas")
+    # ... (resto del código de AgGrid y manejo de selección sin cambios) ...
+    if 'selected_card_id_from_grid' not in st.session_state: st.session_state.selected_card_id_from_grid = None
+    logger.info(f"AGGRID_RENDERING: ID en session_state ANTES de AgGrid: {st.session_state.get('selected_card_id_from_grid')}")
+    results_df_for_aggrid_display = results_df
+    if is_initial_unfiltered_load and len(results_df) > MAX_ROWS_NO_FILTER:
+        logger.info(f"AGGRID_RENDERING: Limitando display a {MAX_ROWS_NO_FILTER} filas de {len(results_df)}.")
+        st.info(f"Mostrando los primeros {MAX_ROWS_NO_FILTER} de {len(results_df)} resultados. Aplica filtros.")
+        results_df_for_aggrid_display = results_df.head(MAX_ROWS_NO_FILTER)
+    grid_response = None
+    if not results_df_for_aggrid_display.empty:
+        display_columns_mapping = {'id': 'ID', 'pokemon_name': 'Nombre Carta', 'supertype': 'Categoría', 'set_name': 'Set', 'rarity': 'Rareza', 'artist': 'Artista', 'price': 'Precio (Trend €)'}
+        cols_in_df_for_display = [col for col in display_columns_mapping.keys() if col in results_df_for_aggrid_display.columns]
+        final_display_df_aggrid = results_df_for_aggrid_display[cols_in_df_for_display].copy()
+        final_display_df_aggrid.rename(columns=display_columns_mapping, inplace=True)
+        price_display_col_name_in_aggrid = display_columns_mapping.get('price')
+        if price_display_col_name_in_aggrid and price_display_col_name_in_aggrid in final_display_df_aggrid.columns:
+             final_display_df_aggrid[price_display_col_name_in_aggrid] = final_display_df_aggrid[price_display_col_name_in_aggrid].apply(lambda x: f"€{x:.2f}" if pd.notna(x) else "N/A")
+        gb = GridOptionsBuilder.from_dataframe(final_display_df_aggrid)
+        gb.configure_selection(selection_mode='single', use_checkbox=False); gb.configure_grid_options(domLayout='normal')
+        gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25)
+        gridOptions = gb.build()
+        st.write("Haz clic en una fila de la tabla para ver sus detalles y opciones de predicción:")
+        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_vFINAL')
+    else: logger.info("AGGRID_RENDERING: No hay datos para mostrar en AgGrid.")
 
-# --- Lógica de Manejo de Clic en AgGrid ---
-if grid_response:
-    logger.debug(f"AGGRID_HANDLER: Procesando grid_response. Tipo de selected_rows: {type(grid_response.get('selected_rows'))}")
-    newly_selected_id_from_grid_click = None; selected_rows_data_from_grid = grid_response.get('selected_rows')
-    if isinstance(selected_rows_data_from_grid, pd.DataFrame) and not selected_rows_data_from_grid.empty:
-        try:
-            first_selected_row_as_series = selected_rows_data_from_grid.iloc[0]
-            if 'ID' in first_selected_row_as_series: newly_selected_id_from_grid_click = first_selected_row_as_series['ID']
-        except Exception as e_aggrid_df: logger.error(f"AGGRID_HANDLER_DF: Error: {e_aggrid_df}", exc_info=True)
-    elif isinstance(selected_rows_data_from_grid, list) and selected_rows_data_from_grid:
-        try:
-            if isinstance(selected_rows_data_from_grid[0], dict): newly_selected_id_from_grid_click = selected_rows_data_from_grid[0].get('ID')
-        except Exception as e_aggrid_list: logger.error(f"AGGRID_HANDLER_LIST: Error: {e_aggrid_list}", exc_info=True)
-    current_id_in_session = st.session_state.get('selected_card_id_from_grid')
-    if newly_selected_id_from_grid_click is not None and newly_selected_id_from_grid_click != current_id_in_session:
-        logger.info(f"AGGRID_HANDLER_STATE_CHANGE: CAMBIO DE SELECCIÓN. Anterior: '{current_id_in_session}', Nuevo: '{newly_selected_id_from_grid_click}'. RE-EJECUTANDO.")
-        st.session_state.selected_card_id_from_grid = newly_selected_id_from_grid_click
-        st.rerun()
+    # Lógica de Manejo de Clic en AgGrid (si la tabla se mostró)
+    if grid_response:
+        logger.debug(f"AGGRID_HANDLER: Procesando grid_response. Tipo de selected_rows: {type(grid_response.get('selected_rows'))}")
+        newly_selected_id_from_grid_click = None; selected_rows_data_from_grid = grid_response.get('selected_rows')
+        if isinstance(selected_rows_data_from_grid, pd.DataFrame) and not selected_rows_data_from_grid.empty:
+            try:
+                first_selected_row_as_series = selected_rows_data_from_grid.iloc[0]
+                if 'ID' in first_selected_row_as_series: newly_selected_id_from_grid_click = first_selected_row_as_series['ID']
+            except Exception as e_aggrid_df: logger.error(f"AGGRID_HANDLER_DF: Error: {e_aggrid_df}", exc_info=True)
+        elif isinstance(selected_rows_data_from_grid, list) and selected_rows_data_from_grid:
+            try:
+                if isinstance(selected_rows_data_from_grid[0], dict): newly_selected_id_from_grid_click = selected_rows_data_from_grid[0].get('ID')
+            except Exception as e_aggrid_list: logger.error(f"AGGRID_HANDLER_LIST: Error: {e_aggrid_list}", exc_info=True)
+        current_id_in_session = st.session_state.get('selected_card_id_from_grid')
+        if newly_selected_id_from_grid_click is not None and newly_selected_id_from_grid_click != current_id_in_session:
+            logger.info(f"AGGRID_HANDLER_STATE_CHANGE: CAMBIO DE SELECCIÓN. Anterior: '{current_id_in_session}', Nuevo: '{newly_selected_id_from_grid_click}'. RE-EJECUTANDO.")
+            st.session_state.selected_card_id_from_grid = newly_selected_id_from_grid_click
+            st.rerun()
+
+else:
+    # Esto solo ocurre en la carga inicial si is_initial_unfiltered_load es True Y results_df está vacío
+    if not all_card_metadata_df[all_card_metadata_df['rarity'] == FEATURED_RARITY].empty:
+         # Si hay destacadas, ya se mostraron arriba
+         pass
+    else:
+         # Si no hay destacadas Y results_df está vacío (porque no hay resultados para mostrar)
+         if bq_client and LATEST_SNAPSHOT_TABLE:
+              st.info("No se encontraron cartas con los filtros seleccionados.") # Mensaje final si no hay nada
+
 
 # --- Sección de Detalle de Carta y Predicción ---
 st.divider(); st.header("Detalle de Carta Seleccionada")
 card_to_display_in_detail_section = None
 id_for_detail_view_from_session = st.session_state.get('selected_card_id_from_grid')
 logger.info(f"DETAIL_VIEW_ENTRY: Intentando mostrar detalles para ID (de session_state): '{id_for_detail_view_from_session}'")
-if id_for_detail_view_from_session and not results_df.empty:
-    matched_rows = results_df[results_df['id'] == id_for_detail_view_from_session]
-    if not matched_rows.empty: card_to_display_in_detail_section = matched_rows.iloc[0]
+
+# Buscar la carta en results_df (que contiene los datos fetched de BQ, incluyendo precio y los campos necesarios para el modelo)
+if id_for_detail_view_from_session:
+    if not results_df.empty:
+        matched_rows = results_df[results_df['id'] == id_for_detail_view_from_session]
+        if not matched_rows.empty: card_to_display_in_detail_section = matched_rows.iloc[0]
+        else: logger.warning(f"DETAIL_VIEW_NOT_FOUND: ID '{id_for_detail_view_from_session}' NO ENCONTRADO en 'results_df'.")
+    else: logger.warning(f"DETAIL_VIEW_NO_DATA: 'results_df' está vacío, no se puede buscar ID '{id_for_detail_view_from_session}'.")
+
+# Fallback a la primera carta de results_df si no hay selección O la selección no se encuentra
 if card_to_display_in_detail_section is None and not results_df.empty:
     card_to_display_in_detail_section = results_df.iloc[0]
     fallback_id = card_to_display_in_detail_section.get('id')
-    if fallback_id and pd.notna(fallback_id) and st.session_state.get('selected_card_id_from_grid') != fallback_id :
-        st.session_state.selected_card_id_from_grid = fallback_id
+    logger.info(f"DETAIL_VIEW_FALLBACK: Usando FALLBACK a la primera carta de 'results_df'. ID: '{fallback_id}'.")
+    # Actualizar session_state solo si el fallback es diferente o no había nada antes
+    if id_for_detail_view_from_session is None or (fallback_id and id_for_detail_view_from_session != fallback_id):
+        if fallback_id and pd.notna(fallback_id) and st.session_state.get('selected_card_id_from_grid') != fallback_id:
+             st.session_state.selected_card_id_from_grid = fallback_id # No re-run aquí
+
+# Renderizar detalles si tenemos una carta seleccionada o fallback
 if card_to_display_in_detail_section is not None and isinstance(card_to_display_in_detail_section, pd.Series) and not card_to_display_in_detail_section.empty:
     card_id_render = card_to_display_in_detail_section.get('id', "N/A")
     card_name_render = card_to_display_in_detail_section.get('pokemon_name', "N/A")
@@ -581,6 +603,7 @@ if card_to_display_in_detail_section is not None and isinstance(card_to_display_
         if pd.notna(card_price_actual_render): st.metric(label="Precio Actual (Trend €)", value=f"€{card_price_actual_render:.2f}")
         else: st.markdown("**Precio Actual (Trend €):** N/A")
         st.markdown("---"); st.subheader("Predicción de Precio (Modelo Local Estimado)")
+        # El botón de predicción aparece solo si el modelo y preprocesadores cargan y hay precio actual
         if local_tf_model_layer and ohe_local_preprocessor and scaler_local_preprocessor: # MLP
             if st.button("🧠 Estimar Precio Futuro (MLP)", key=f"predict_mlp_btn_{card_id_render}"):
                 if pd.notna(card_price_actual_render):
@@ -592,20 +615,20 @@ if card_to_display_in_detail_section is not None and isinstance(card_to_display_
                         st.metric(label="Precio Estimado (MLP)", value=f"€{pred_price:.2f}", delta=f"{delta:+.2f}€", delta_color=delta_color)
                     else: st.warning("No se pudo obtener estimación (MLP).")
                 else: st.warning("Estimación MLP no posible sin precio actual.")
-        else: st.warning("Modelo MLP o preprocesadores no cargados.")
-else:
-    if not results_df.empty: pass
-    else:
-         if not is_initial_unfiltered_load:
-              st.info("No se encontraron cartas con los filtros seleccionados.")
+        else:
+             # Este mensaje se muestra si la sección de detalle está activa pero el modelo no cargó
+             st.warning("Modelo MLP o preprocesadores no cargados.")
 
-# --- Mensajes finales (ajustados) ---
-if not results_df_for_aggrid_display.empty: pass
-elif not results_df.empty: st.info(f"Se encontraron {len(results_df)} resultados que coinciden con los filtros, pero no se muestran en la tabla. Refina filtros.")
+
 else:
-    if bq_client and LATEST_SNAPSHOT_TABLE:
-         if not all_card_metadata_df[all_card_metadata_df['rarity'] == FEATURED_RARITY].empty: pass
-         else: st.info("No se encontraron cartas que coincidan con los filtros seleccionados.")
+    # Si no hay ninguna carta seleccionada ni fallback (results_df está vacío)
+    if not is_initial_unfiltered_load:
+         # Si el usuario aplicó filtros y no encontró nada
+         st.info("No se encontraron cartas con los filtros seleccionados.")
+    else:
+         # Si estamos en la carga inicial Y results_df está vacío (no hay datos para mostrar destacadas o tabla)
+         if bq_client and LATEST_SNAPSHOT_TABLE:
+              st.info("No se encontraron cartas en la base de datos con la tabla de precios actual.") # Mensaje más general
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v0.8.7 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v0.9 | TF: {tf.__version__}")
