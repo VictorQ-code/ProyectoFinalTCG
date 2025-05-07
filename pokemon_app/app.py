@@ -281,7 +281,7 @@ def predict_price_with_local_tf_layer(
         final_input_array_for_model = np.concatenate(processed_feature_parts, axis=1)
         logger.info(f"PREDICT_LOCAL_COMBINE: Array final para modelo (shape): {final_input_array_for_model.shape}")
 
-        EXPECTED_NUM_FEATURES = 4865
+        EXPECTED_NUM_FEATURES = 4865 # Confirmado por saved_model_cli
         if final_input_array_for_model.shape[1] != EXPECTED_NUM_FEATURES:
             logger.error(f"¡¡¡DESAJUSTE DE SHAPE EN LA ENTRADA DEL MODELO!!!")
             logger.error(f"    Modelo espera: {EXPECTED_NUM_FEATURES} características.")
@@ -427,32 +427,36 @@ logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 
 
 # --- Inyectar CSS para botones de imagen ---
+# Este CSS solo aplica a botones dentro de columnas
 st.markdown("""
 <style>
 div[data-testid="stColumn"] { /* Puedes añadir estilos aquí si quieres afectar las columnas, ej: gap */ }
+/* Estilo para el botón que contiene la imagen */
 div[data-testid="stColumn"] button {
     display: block !important; margin: auto; padding: 0 !important;
     border: none !important; background-color: transparent !important;
     cursor: pointer !important; text-align: center !important;
 }
+/* Estilo para la imagen dentro del botón */
 div[data-testid="stColumn"] button img {
     display: block; margin: auto; max-width: 100%; height: auto;
 }
+/* Efecto hover para la imagen dentro del botón */
 div[data-testid="stColumn"] button:hover img { opacity: 0.8; }
 /* Ocultar el texto por defecto del botón */
 div[data-testid="stColumn"] button p { display: none; }
 /* Intento adicional para asegurar que no se muestre texto */
 div[data-testid="stColumn"] button > div { line-height: 0; }
 </style>
-""", unsafe_allow_html=True) # Este markdown se inyecta una vez
+""", unsafe_allow_html=True)
 
 
-# --- NUEVA SECCIÓN: Cartas Destacadas ---
+# --- NUEVA SECCIÓN: Cartas Destacadas (solo imágenes y set) ---
 is_initial_unfiltered_load = (not selected_sets and not selected_names_to_filter and not selected_rarities and (selected_supertype == "Todos" or not selected_supertype))
 
 # Solo mostrar esta sección si estamos en la carga inicial y hay metadatos
 if is_initial_unfiltered_load and not all_card_metadata_df.empty:
-    st.header("Cartas Destacadas") # Mantener el título
+    st.header("Cartas Destacadas")
 
     # Filtrar por rareza destacada
     special_illustration_rares = all_card_metadata_df[
@@ -473,23 +477,18 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
                  with cols[i]:
                      card_id_featured = card.get('id')
                      card_name_featured = card.get('name', 'N/A')
+                     card_set_featured = card.get('set_name', 'N/A')
                      image_url_featured = card.get('images_large')
 
+                     # Mostrar la imagen con st.image (NO es clicable directamente)
                      if pd.notna(image_url_featured) and isinstance(image_url_featured, str):
-                         # La etiqueta del botón es solo un espacio en blanco
-                         # La imagen se muestra DENTRO del botón gracias al CSS
-                         # El alt text de la imagen es importante para accesibilidad
-                         # No usamos unsafe_allow_html=True en st.button
-                         if st.button(" ", key=f"featured_card_click_{card_id_featured}"): # <--- CORRECCIÓN APLICADA AQUÍ (REMOVIDO unsafe_allow_html=True)
-                              logger.info(f"FEATURED_CARD_CLICK: Carta destacada '{card_id_featured}' seleccionada. Re-ejecutando.")
-                              st.session_state.selected_card_id_from_grid = card_id_featured
-                              st.rerun()
+                         st.image(image_url_featured, width=150, caption=card_set_featured)
+                         # No hay botón aquí para clickear la imagen
+
                      else:
+                         # Mostrar un placeholder si la imagen no está disponible
                          st.warning("Imagen no disponible")
-                         if st.button(f"Seleccionar {card_id_featured}", key=f"featured_card_click_placeholder_{card_id_featured}"):
-                              logger.info(f"FEATURED_CARD_CLICK: Placeholder '{card_id_featured}' seleccionado. Re-ejecutando.")
-                              st.session_state.selected_card_id_from_grid = card_id_featured
-                              st.rerun()
+                         st.caption(f"{card_name_featured} ({card_set_featured})")
 
              st.markdown("---") # Separador visual después de las destacadas
 
@@ -609,4 +608,4 @@ else:
          else: st.info("No se encontraron cartas que coincidan con los filtros seleccionados.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v0.8.6 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v0.8.7 | TF: {tf.__version__}")
