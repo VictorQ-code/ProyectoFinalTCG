@@ -116,7 +116,7 @@ def load_local_tf_model_as_layer(model_path):
         except AttributeError: logger.warning("LOAD_TF_LAYER: No se pudo acceder a '_call_signature'.")
         logger.info("LOAD_TF_LAYER: La inspección directa de 'structured_outputs' no está disponible en esta versión de TFSMLayer. "
                     f"Se usará la clave de salida configurada: '{_MODEL_OUTPUT_TENSOR_KEY_NAME}'. "
-                    "Verifícala con `saved_model_cli` if there are prediction issues.")
+                    "Verifícala con `saved_model_cli` if there are prediction issues.") # English in log message
         return model_as_layer_obj
     except Exception as e:
         logger.error(f"LOAD_TF_LAYER: Error crítico al cargar SavedModel como TFSMLayer desde {model_path}: {e}", exc_info=True)
@@ -350,6 +350,7 @@ all_card_metadata_df = get_card_metadata_with_base_names(bq_client)
 # Ahora fetch_card_data_from_bq solo necesita los filtros, y siempre devuelve un DF (vacío o con datos).
 # La lógica de filtrar IDs antes de la query ya está dentro de fetch_card_data_from_bq.
 logger.info("MAIN_APP: Fetcheando resultados principales de BigQuery (sujeto a filtros en fetch_card_data_from_bq).")
+# selected_... variables ya están definidas por los widgets en la sidebar
 results_df = fetch_card_data_from_bq(
     bq_client, LATEST_SNAPSHOT_TABLE, selected_supertype, selected_sets,
     selected_names_to_filter, selected_rarities, sort_sql, all_card_metadata_df # Pasamos metadatos para el pre-filtro
@@ -361,7 +362,7 @@ logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 if 'selected_card_id_from_grid' not in st.session_state:
     st.session_state.selected_card_id_from_grid = None
     logger.info("SESSION_STATE_INIT: 'selected_card_id_from_grid' inicializado a None.")
-logger.info(f"AGGRID_RENDERING: ID en session_state ANTES de AgGrid: {st.session_state.get('selected_card_id_from_grid')}")
+logger.info(f"DETAIL_VIEW_ENTRY (pre-render): ID en session_state: {st.session_state.get('selected_card_id_from_grid')}")
 
 
 # --- Lógica para establecer la carta seleccionada al inicio si no hay nada ---
@@ -378,6 +379,12 @@ if st.session_state.selected_card_id_from_grid is None and not results_df.empty:
             st.session_state.selected_card_id_from_grid = random_card_id
             logger.info(f"FALLBACK_SELECT: Seleccionando carta aleatoria con precio como fallback: '{random_card_id}'.")
             # No st.rerun() aquí, la próxima ejecución ya usará este ID
+    else:
+        logger.warning("FALLBACK_SELECT: No se encontraron cartas con precio para seleccionar un fallback.")
+
+
+# --- Determinar si estamos en la carga inicial sin filtros ---
+is_initial_unfiltered_load = (not selected_sets and not selected_names_to_filter and not selected_rarities and (selected_supertype == "Todos" or not selected_supertype))
 
 
 # --- SECCIÓN PRINCIPAL DE CONTENIDO ---
@@ -429,13 +436,13 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
          st.info("No se encontraron cartas con la rareza destacada o en la base de datos actual.")
     # La tabla NO se muestra en este bloque (is_initial_unfiltered_load es True)
 
+
 # Mostrar la tabla SOLO si NO es carga inicial sin filtros (es decir, se aplicaron filtros)
-# O si results_df está vacío (esto cubre el caso donde no hay resultados para los filtros aplicados)
 elif not is_initial_unfiltered_load: # Tabla visible solo al aplicar filtros
     # --- Área Principal: Visualización de Resultados (AgGrid) ---
     st.header("Resultados de Cartas")
     # ... (resto del código de AgGrid y manejo de selección sin cambios) ...
-    if 'selected_card_id_from_grid' not in st.session_state: st.session_state.selected_card_id_from_grid = None # Esto ya se inicializó arriba
+    # st.session_state.selected_card_id_from_grid ya se inicializó y se estableció fallback arriba
     logger.info(f"AGGRID_RENDERING: ID en session_state ANTES de AgGrid: {st.session_state.get('selected_card_id_from_grid')}")
     results_df_for_aggrid_display = results_df # Usar el DF ya cargado
     if len(results_df) > MAX_ROWS_NO_FILTER: # Solo mostramos mensaje de limitación si hay muchos resultados
@@ -464,31 +471,32 @@ elif not is_initial_unfiltered_load: # Tabla visible solo al aplicar filtros
         logger.debug(f"AGGRID_HANDLER: Procesando grid_response. Tipo de selected_rows: {type(grid_response.get('selected_rows'))}")
         newly_selected_id_from_grid_click = None; selected_rows_data_from_grid = grid_response.get('selected_rows')
         if isinstance(selected_rows_data_from_grid, pd.DataFrame) and not selected_rows_data_from_grid.empty:
-            try: if 'ID' in first_selected_row_as_series: newly_selected_id_from_grid_click = selected_rows_data_from_grid.iloc[0]['ID']
-            except Exception as e_aggrid_df: logger.error(f"AGGRID_HANDLER_DF: Error: {e_aggrid_df}", exc_info=True)
+            try: # <-- CORRECCIÓN DE SINTAXIS try:
+                first_selected_row_as_series = selected_rows_data_from_grid.iloc[0]
+                if 'ID' in first_selected_row_as_series: newly_selected_id_from_grid_click = selected_rows_data_from_grid.iloc[0]['ID']
+            except Exception as e_aggrid_df: logger.error(f"AGGRID_HANDLER_DF: Error: {e_aggrid_df}", exc_info=True); newly_selected_id_from_grid_click = None # Asegurar None
         elif isinstance(selected_rows_data_from_grid, list) and selected_rows_data_from_grid:
-            try: if isinstance(selected_rows_data_from_grid[0], dict): newly_selected_id_from_grid_click = selected_rows_data_from_grid[0].get('ID')
-            except Exception as e_aggrid_list: logger.error(f"AGGRID_HANDLER_LIST: Error: {e_aggrid_list}", exc_info=True)
+            try: # <-- CORRECCIÓN DE SINTAXIS try:
+                if isinstance(selected_rows_data_from_grid[0], dict): newly_selected_id_from_grid_click = selected_rows_data_from_grid[0].get('ID')
+            except Exception as e_aggrid_list: logger.error(f"AGGRID_HANDLER_LIST: Error: {e_aggrid_list}", exc_info=True); newly_selected_id_from_grid_click = None # Asegurar None
+
         current_id_in_session = st.session_state.get('selected_card_id_from_grid')
         if newly_selected_id_from_grid_click is not None and newly_selected_id_from_grid_click != current_id_in_session:
             logger.info(f"AGGRID_HANDLER_STATE_CHANGE: CAMBIO DE SELECCIÓN. Anterior: '{current_id_in_session}', Nuevo: '{newly_selected_id_from_grid_click}'. RE-EJECUTANDO.")
             st.session_state.selected_card_id_from_grid = newly_selected_id_from_grid_click
             st.rerun()
-    # else: logger.debug("AgGrid section was displayed but grid_response is None.") # Opcional log
+    # else: logger.debug("AgGrid section was displayed but grid_response is None.")
 
 
 # --- Sección de Detalle de Carta y Predicción ---
-# Esta sección siempre se intenta mostrar si hay una carta seleccionada en session_state.
-# El fallback ya selecciona una carta aleatoria con precio si results_df no está vacío y no hay selección previa.
+# Esta sección solo se intenta mostrar si hay una carta seleccionada en session_state.
 if st.session_state.selected_card_id_from_grid is not None:
     st.divider(); st.header("Detalle de Carta Seleccionada")
     card_to_display_in_detail_section = None
     id_for_detail_view_from_session = st.session_state.get('selected_card_id_from_grid')
-    logger.info(f"DETAIL_VIEW_ENTRY: Intentando mostrar detalles para ID (de session_state): '{id_for_detail_view_from_session}'")
 
-    # Buscar la carta seleccionada en results_df. Si results_df está vacío (ej. no hubo resultados para filtros)
-    # o la carta seleccionada no está en results_df actual (ej. seleccionó destacada y luego aplicó filtros),
-    # buscar en all_card_metadata_df para al menos mostrar metadatos.
+    # Buscar la carta seleccionada en results_df. Si no está en results_df, buscar en all_card_metadata_df.
+    # Usamos all_card_metadata_df como fallback para poder mostrar detalles básicos incluso si no hay precio fetchado.
     source_df_for_details = results_df if (not results_df.empty and id_for_detail_view_from_session in results_df['id'].values) else all_card_metadata_df
 
     if not source_df_for_details.empty:
@@ -497,11 +505,16 @@ if st.session_state.selected_card_id_from_grid is not None:
              card_to_display_in_detail_section = matched_rows.iloc[0]
              logger.info(f"DETAIL_VIEW_FOUND: Carta '{id_for_detail_view_from_session}' encontrada en la fuente de detalles.")
         else:
-             logger.warning(f"DETAIL_VIEW_NOT_FOUND: ID '{id_for_detail_view_from_session}' NO ENCONTRADO en la fuente de detalles. Resetting selection.")
+             # Si la carta seleccionada no se encuentra en ninguna de las fuentes (raro si all_card_metadata_df está completo)
+             logger.warning(f"DETAIL_VIEW_NOT_FOUND: ID '{id_for_detail_view_from_session}' NO ENCONTRADO en ninguna fuente de detalles. Resetting selection.")
              st.session_state.selected_card_id_from_grid = None # Resetear selección si no se encuentra
              st.rerun() # Re-ejecutar para limpiar la sección de detalle
     else:
+         # Esto ocurre si la sección de detalles se intenta mostrar (hay un ID en state)
+         # pero ni results_df ni all_card_metadata_df tienen datos (lo cual es un error de carga inicial).
          logger.warning(f"DETAIL_VIEW_NO_DATA: La fuente de datos para detalles está vacía, no se puede buscar ID '{id_for_detail_view_from_session}'.")
+         st.error("Error interno: No se cargaron los datos de metadatos.")
+
 
     # Renderizar detalles si tenemos una carta
     if card_to_display_in_detail_section is not None and isinstance(card_to_display_in_detail_section, pd.Series) and not card_to_display_in_detail_section.empty:
@@ -512,7 +525,7 @@ if st.session_state.selected_card_id_from_grid is not None:
         card_supertype_render = card_to_display_in_detail_section.get('supertype', "N/A")
         card_rarity_render = card_to_display_in_detail_section.get('rarity', "N/A")
         card_artist_render = card_to_display_in_detail_section.get('artist', None)
-        card_price_actual_render = card_to_display_in_detail_section.get('price', None) # Precio solo está en results_df
+        card_price_actual_render = card_to_display_in_detail_section.get('price', None) # Precio solo está en results_df (si la carta vino de ahí)
         cardmarket_url_render = card_to_display_in_detail_section.get('cardmarket_url', None)
         tcgplayer_url_render = card_to_display_in_detail_section.get('tcgplayer_url', None)
         col_img, col_info = st.columns([1, 2])
@@ -547,13 +560,21 @@ if st.session_state.selected_card_id_from_grid is not None:
             else:
                  st.warning("El modelo MLP o sus preprocesadores no están cargados correctamente.")
 
-
 else:
-    # Si no hay ninguna carta seleccionada en session_state
-    st.info("Selecciona una carta de la tabla de resultados para ver sus detalles, o explora las cartas destacadas.")
-    # Si AgGrid se muestra, el usuario verá la tabla y sabrá clickear.
-    # Si AgGrid no se muestra (carga inicial), verá las destacadas arriba y este mensaje.
-
+    # Si no hay ninguna carta seleccionada en session_state, mostramos un mensaje guía.
+    # Esto ocurrirá si results_df está vacío Y no es la carga inicial (aplicó filtro y no encontró)
+    # O si results_df está vacío en la carga inicial (no hay datos en BQ).
+    # La lógica de fallback ya seleccionó una carta si results_df NO está vacío.
+    # Por lo tanto, este 'else' solo se ejecuta si results_df está vacío.
+    if results_df.empty:
+         if not is_initial_unfiltered_load: # Si se aplicaron filtros y no hubo resultados
+              st.info("No se encontraron cartas con los filtros seleccionados.")
+         else: # Carga inicial y results_df está vacío
+              if bq_client and LATEST_SNAPSHOT_TABLE:
+                   if not all_card_metadata_df.empty: # Si hay metadatos, pero no results_df (no hay precio?)
+                        st.info("No se encontraron cartas con precio en la base de datos actual.")
+                   else: # No hay metadatos en absoluto (BQ error?)
+                         st.error("Error interno: No se cargaron los datos de metadatos.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.1 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.3 | TF: {tf.__version__}")
