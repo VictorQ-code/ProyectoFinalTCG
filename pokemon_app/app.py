@@ -430,47 +430,21 @@ logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 st.markdown("""
 <style>
 /* Estilo para el contenedor de columna que envuelve el botón */
-div[data-testid="stColumn"] {
-    /* Puedes añadir estilos aquí si quieres afectar las columnas, ej: gap */
-}
+div[data-testid="stColumn"] { /* Puedes añadir estilos aquí si quieres afectar las columnas, ej: gap */ }
 /* Estilo para el botón que contiene la imagen */
 div[data-testid="stColumn"] button {
-    display: block !important; /* Hace el botón un bloque para controlar el ancho */
-    margin: auto; /* Centra el botón en la columna */
-    padding: 0 !important; /* Elimina el padding del botón */
-    border: none !important; /* Elimina el borde del botón */
-    background-color: transparent !important; /* Fondo transparente */
-    cursor: pointer !important; /* Muestra cursor de clic */
-    text-align: center !important; /* Centra el contenido */
+    display: block !important; margin: auto; padding: 0 !important;
+    border: none !important; background-color: transparent !important;
+    cursor: pointer !important; text-align: center !important;
 }
 /* Estilo para la imagen dentro del botón */
 div[data-testid="stColumn"] button img {
-    display: block; /* Asegura que la imagen no tenga espacio extra abajo */
-    margin: auto; /* Centra la imagen dentro del botón */
-    max-width: 100%; /* Ajusta al ancho de la columna */
-    height: auto; /* Mantiene la proporción */
+    display: block; margin: auto; max-width: 100%; height: auto;
 }
 /* Efecto hover para la imagen dentro del botón */
-div[data-testid="stColumn"] button:hover img {
-    opacity: 0.8;
-}
-/* Ocultar el texto por defecto del botón si unsafe_allow_html=True */
-/* Esto puede variar según la versión de Streamlit */
-div[data-testid="stColumn"] button > div > p {
-    display: none;
-}
-/* Intento adicional para ocultar el texto */
-div[data-testid="stColumn"] button > div {
-   /* display: flex; /* O grid */
-   /* justify-content: center; */
-   /* align-items: center; */
-   /* flex-direction: column; */
-}
-/* Intento adicional para ocultar el texto */
-div[data-testid="stColumn"] button p {
-   display: none;
-}
-
+div[data-testid="stColumn"] button:hover img { opacity: 0.8; }
+/* Ocultar el texto por defecto del botón */
+div[data-testid="stColumn"] button p { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -486,39 +460,31 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
     ].copy()
 
     if not special_illustration_rares.empty:
-        # Seleccionar un número aleatorio de cartas destacadas para mostrar
         num_cards_to_show = min(len(special_illustration_rares), NUM_FEATURED_CARDS_TO_DISPLAY)
-        if len(special_illustration_rares) > 0 and num_cards_to_show > 0 : # Asegurarse de que haya cartas y queramos mostrar > 0
+        if len(special_illustration_rares) > 0 and num_cards_to_show > 0:
              sample_indices = random.sample(special_illustration_rares.index.tolist(), num_cards_to_show)
              display_cards_df = special_illustration_rares.loc[sample_indices].reset_index(drop=True)
-        else:
-             display_cards_df = pd.DataFrame() # Asegurar que esté vacío si no hay coincidencias o num_to_show es 0
+        else: display_cards_df = pd.DataFrame()
 
         if not display_cards_df.empty:
-             cols = st.columns(num_cards_to_show) # <-- CORRECCIÓN APLICADA AQUÍ (usar num_cards_to_show)
+             cols = st.columns(num_cards_to_show)
 
              for i, card in display_cards_df.iterrows():
                  with cols[i]:
                      card_id_featured = card.get('id')
-                     card_name_featured = card.get('name', 'N/A') # Usar 'name' de metadatos para consistencia
+                     card_name_featured = card.get('name', 'N/A')
                      image_url_featured = card.get('images_large')
 
-                     # Usar st.button con etiqueta HTML de imagen
                      if pd.notna(image_url_featured) and isinstance(image_url_featured, str):
-                         # Etiqueta HTML de la imagen solamente
                          img_html_label = f"""<img src='{image_url_featured}' width='150' alt='{card_name_featured}'>"""
-
-                         # El primer argumento (label) debe ser hashable. Usamos el HTML string,
-                         # si la imagen URL es única, el string debería ser hashable.
-                         # La clave es siempre única.
-                         if st.button(img_html_label, key=f"featured_card_click_{card_id_featured}", unsafe_allow_html=True):
+                         # Usamos un espacio en blanco como etiqueta principal para el botón
+                         # El HTML de la imagen se renderizará gracias al CSS y unsafe_allow_html del markdown de la etiqueta
+                         if st.button(" ", key=f"featured_card_click_{card_id_featured}", unsafe_allow_html=True): # <-- CORRECCIÓN AQUÍ (Label es " ", unsafe_allow_html es para el label markdown)
                              logger.info(f"FEATURED_CARD_CLICK: Carta destacada '{card_id_featured}' seleccionada. Re-ejecutando.")
                              st.session_state.selected_card_id_from_grid = card_id_featured
                              st.rerun()
                      else:
-                         # Mostrar un placeholder si la imagen no está disponible
                          st.warning("Imagen no disponible")
-                         # Opcional: Hacer el nombre/ID clicable si no hay imagen
                          if st.button(f"Seleccionar {card_id_featured}", key=f"featured_card_click_placeholder_{card_id_featured}"):
                               logger.info(f"FEATURED_CARD_CLICK: Placeholder '{card_id_featured}' seleccionado. Re-ejecutando.")
                               st.session_state.selected_card_id_from_grid = card_id_featured
@@ -642,4 +608,4 @@ else:
          else: st.info("No se encontraron cartas que coincidan con los filtros seleccionados.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v0.8.3 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v0.8.4 | TF: {tf.__version__}")
