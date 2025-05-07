@@ -178,33 +178,49 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
         if cleaned_name.endswith(suffix): cleaned_name = cleaned_name[:-len(suffix)].strip()
     return cleaned_name if cleaned_name else name_str
 
-@st.cache_data(ttl=3600)
-def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
-    query = f"""
+# --- MOVER DEFINICIÓN DE fetch_card_data_from_bq AQUÍ ---
+@st.cache_data(ttl=600)
+def fetch_card_data_from_bq(
+    _client: bigquery.Client, latest_table_path: str, supertype_ui_filter: str | None,
+    sets_ui_filter: list, names_ui_filter: list, rarities_ui_filter: list,
+    sort_direction: str, full_metadata_df_param: pd.DataFrame
+) -> pd.DataFrame:
+    logger.info(f"FETCH_BQ_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
+    if not latest_table_path: logger.error("FETCH_BQ_DATA_FAIL: 'latest_table_path' es None."); st.error("Error Interno: No se pudo determinar la tabla de precios."); return pd.DataFrame()
+    ids_to_query_df = full_metadata_df_param.copy()
+    if supertype_ui_filter and supertype_ui_filter != "Todos": ids_to_query_df = ids_to_query_df[ids_to_query_df['supertype'] == supertype_ui_filter]
+    if sets_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['set_name'].isin(sets_ui_filter)]
+    if rarities_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['rarity'].isin(rarities_ui_filter)]
+    if names_ui_filter:
+        actual_name_col_to_filter_on = 'base_pokemon_name' if supertype_ui_filter == 'Pokémon' else 'name'
+        if actual_name_col_to_filter_on in ids_to_query_df.columns: ids_to_query_df = ids_to_query_df[ids_to_query_df[actual_name_col_to_filter_on].isin(names_ui_filter)]
+    if ids_to_query_df.empty: logger.info("FETCH_BQ_DATA: No hay IDs que coincidan."); return pd.DataFrame()
+    list_of_card_ids_to_query = ids_to_query_df['id'].unique().tolist()
+    if not list_of_card_ids_to_query: logger.info("FETCH_BQ_DATA: Lista IDs vacía."); return pd.DataFrame()
+    query_sql_template = f"""
     SELECT
-        id, name, supertype, subtypes, types,
-        rarity, set_id, set_name,
-        artist, images_large, cardmarket_url, tcgplayer_url
-    FROM `{CARD_METADATA_TABLE}`
+        meta.id, meta.name AS pokemon_name, meta.supertype,
+        meta.subtypes, meta.types, -- ASEGURADAS
+        meta.set_name, meta.rarity, meta.artist, meta.images_large AS image_url,
+        meta.cardmarket_url, meta.tcgplayer_url, prices.cm_trendPrice AS price
+    FROM `{CARD_METADATA_TABLE}` AS meta
+    JOIN `{latest_table_path}` AS prices ON meta.id = prices.id
+    WHERE meta.id IN UNNEST(@card_ids_param)
+    ORDER BY prices.cm_trendPrice {sort_direction}
     """
-    logger.info(f"METADATA_BQ: Ejecutando query para metadatos: {query[:100]}...")
+    query_params_bq = [bigquery.ArrayQueryParameter("card_ids_param", "STRING", list_of_card_ids_to_query)]
+    job_config_bq = bigquery.QueryJobConfig(query_parameters=query_params_bq)
+    logger.info(f"FETCH_BQ_DATA: SQL BQ para {len(list_of_card_ids_to_query)} IDs. Orden: {sort_direction}")
     try:
-        df = _client.query(query).to_dataframe()
-        if df.empty:
-            logger.warning("METADATA_BQ: DataFrame de metadatos vacío devuelto por BigQuery.")
-            st.warning("No se pudieron cargar los metadatos de las cartas desde BigQuery.")
-            return pd.DataFrame()
-        for col_to_check in ['cardmarket_url', 'tcgplayer_url', 'types', 'subtypes']:
-            if col_to_check not in df.columns:
-                df[col_to_check] = None
-                logger.warning(f"METADATA_BQ: Columna '{col_to_check}' no encontrada en metadatos, añadida como None/placeholder.")
-        df['base_pokemon_name'] = df.apply(lambda row: get_true_base_name(row['name'], row['supertype'], POKEMON_SUFFIXES_TO_REMOVE, MULTI_WORD_BASE_NAMES), axis=1)
-        logger.info(f"METADATA_BQ: Metadatos cargados y procesados. Total filas: {len(df)}.")
-        return df
+        results_from_bq_df = _client.query(query_sql_template, job_config=job_config_bq).to_dataframe()
+        if 'price' in results_from_bq_df.columns: results_from_bq_df['price'] = pd.to_numeric(results_from_bq_df['price'], errors='coerce')
+        logger.info(f"FETCH_BQ_DATA: Consulta a BQ OK. Filas: {len(results_from_bq_df)}.")
+        return results_from_bq_df
     except Exception as e:
-        if "db-dtypes" in str(e).lower(): logger.error("METADATA_BQ: Error de 'db-dtypes'.", exc_info=True); st.error("Error de Dependencia: Falta 'db-dtypes'.")
-        else: logger.error(f"METADATA_BQ: Error al cargar metadatos de BigQuery: {e}", exc_info=True); st.error(f"Error al cargar metadatos de cartas: {e}.")
+        if "db-dtypes" in str(e).lower(): logger.error("FETCH_BQ_DATA_FAIL: Error de 'db-dtypes'.", exc_info=True); st.error("Error de Dependencia: Falta 'db-dtypes'.")
+        else: logger.error(f"FETCH_BQ_DATA_FAIL: Error BQ: {e}", exc_info=True); st.error(f"Error al obtener datos de cartas: {e}.")
         return pd.DataFrame()
+
 
 # --- FUNCIÓN DE PREDICCIÓN CON MODELO LOCAL (MLP/TFSMLayer) ---
 def predict_price_with_local_tf_layer(
@@ -344,30 +360,59 @@ def predict_price_with_local_tf_layer(
 # --- Carga de Datos Inicial de BigQuery ---
 logger.info("APP_INIT: Cargando datos iniciales de BigQuery.")
 LATEST_SNAPSHOT_TABLE = get_latest_snapshot_table(bq_client)
+# all_card_metadata_df es necesario para los filtros y para la sección destacada
 all_card_metadata_df = get_card_metadata_with_base_names(bq_client)
 
-# --- Mover la carga de results_df aquí para que SIEMPRE esté definido ---
-# Ahora fetch_card_data_from_bq solo necesita los filtros, y siempre devuelve un DF (vacío o con datos).
-# La lógica de filtrar IDs antes de la query ya está dentro de fetch_card_data_from_bq.
-logger.info("MAIN_APP: Fetcheando resultados principales de BigQuery (sujeto a filtros en fetch_card_data_from_bq).")
-# selected_... variables ya están definidas por los widgets en la sidebar
+if not LATEST_SNAPSHOT_TABLE or all_card_metadata_df.empty:
+    logger.critical("APP_INIT_FAIL: Datos esenciales de BigQuery no cargados.")
+    st.error("Error Crítico: No se pudieron cargar los datos esenciales de BigQuery. La aplicación se detendrá.")
+    st.stop()
+logger.info("APP_INIT: Datos iniciales de BigQuery cargados OK.")
+
+
+# --- Sidebar y Filtros ---
+st.sidebar.header("Filtros y Opciones")
+options_df_for_filters = all_card_metadata_df.copy()
+supertype_options_list = sorted(options_df_for_filters['supertype'].dropna().unique().tolist())
+select_supertype_options = ["Todos"] + supertype_options_list if supertype_options_list else ["Todos"]
+selected_supertype = st.sidebar.selectbox("Categoría:", select_supertype_options, index=0, key="sb_supertype_filter_v3")
+if selected_supertype != "Todos": options_df_for_filters = options_df_for_filters[options_df_for_filters['supertype'] == selected_supertype]
+set_options_list = sorted(options_df_for_filters['set_name'].dropna().unique().tolist())
+selected_sets = st.sidebar.multiselect("Set(s):", set_options_list, key="ms_sets_filter_v3")
+if selected_sets: options_df_for_filters = options_df_for_filters[options_df_for_filters['set_name'].isin(selected_sets)]
+name_label = "Nombre de Carta:"; name_col_for_options = 'name'
+if selected_supertype == 'Pokémon': name_col_for_options = 'base_pokemon_name'; name_label = "Pokémon (Nombre Base):"
+elif selected_supertype != "Todos": name_label = f"Nombre ({selected_supertype}):"
+if name_col_for_options in options_df_for_filters.columns: name_options_list = sorted(options_df_for_filters[name_col_for_options].dropna().unique().tolist())
+else: name_options_list = []; logger.warning(f"SIDEBAR: Columna '{name_col_for_options}' no encontrada para filtro de nombre.")
+selected_names_to_filter = st.sidebar.multiselect(name_label, name_options_list, key="ms_names_filter_v3")
+if selected_names_to_filter and name_col_for_options in options_df_for_filters.columns: options_df_for_filters = options_df_for_filters[options_df_for_filters[name_col_for_options].isin(selected_names_to_filter)]
+rarity_options_list = sorted(options_df_for_filters['rarity'].dropna().unique().tolist())
+selected_rarities = st.sidebar.multiselect("Rareza(s):", rarity_options_list, key="ms_rarities_filter_v3")
+sort_order = st.sidebar.radio("Ordenar por Precio (Trend):", ("Ascendente", "Descendente"), index=1, key="rd_sort_order_v3")
+sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
+
+# --- Mover la carga de results_df aquí para que SIEMPRE esté definido DESPUÉS de los inputs de la sidebar ---
+# results_df contiene los datos fetcheados basados en los filtros de la sidebar
+logger.info("MAIN_APP: Fetcheando resultados principales de BigQuery (basado en filtros de sidebar).")
 results_df = fetch_card_data_from_bq(
     bq_client, LATEST_SNAPSHOT_TABLE, selected_supertype, selected_sets,
     selected_names_to_filter, selected_rarities, sort_sql, all_card_metadata_df # Pasamos metadatos para el pre-filtro
 )
-logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
+logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas (reflejando filtros).")
 
 
 # --- Inicializar session_state key para la carta seleccionada ---
 if 'selected_card_id_from_grid' not in st.session_state:
     st.session_state.selected_card_id_from_grid = None
     logger.info("SESSION_STATE_INIT: 'selected_card_id_from_grid' inicializado a None.")
-# logger.info(f"DETAIL_VIEW_ENTRY (pre-render): ID en session_state: {st.session_state.get('selected_card_id_from_grid')}") # Moved log below
+logger.info(f"DETAIL_VIEW_ENTRY (pre-render): ID en session_state: {st.session_state.get('selected_card_id_from_grid')}")
 
 
 # --- Lógica para establecer la carta seleccionada al inicio si no hay nada ---
 # Esto ocurre en la PRIMERA carga o si session_state se resetea y no hay AgGrid seleccionado.
 # Queremos seleccionar una carta *aleatoria con precio* de results_df si results_df no está vacío.
+# Esta lógica DEBE estar DESPUÉS de que results_df se ha cargado basado en los filtros actuales.
 if st.session_state.selected_card_id_from_grid is None and not results_df.empty:
     # Filtrar cartas con precio actual para seleccionar un fallback que permita predecir
     cards_with_price = results_df[pd.notna(results_df['price'])]
@@ -380,7 +425,7 @@ if st.session_state.selected_card_id_from_grid is None and not results_df.empty:
             logger.info(f"FALLBACK_SELECT: Seleccionando carta aleatoria con precio como fallback: '{random_card_id}'.")
             # No st.rerun() aquí, la próxima ejecución ya usará este ID
     else:
-        logger.warning("FALLBACK_SELECT: No se encontraron cartas con precio para seleccionar un fallback.")
+        logger.warning("FALLBACK_SELECT: No se encontraron cartas con precio en los resultados filtrados para seleccionar un fallback.")
 
 
 # --- Determinar si estamos en la carga inicial sin filtros ---
@@ -432,14 +477,14 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
     # Si es carga inicial SIN filtros PERO no se mostraron destacadas
     # Mostrar un mensaje antes del detalle si no hay destacadas
     # Si hay destacadas, ya se mostraron y no necesitamos mensaje extra aquí.
-    # Este mensaje solo se muestra si results_df está vacío Y no se mostraron destacadas en la carga inicial
-    if special_illustration_rares.empty and results_df.empty and bq_client and LATEST_SNAPSHOT_TABLE:
-         st.info("No se encontraron cartas con la rareza destacada o en la base de datos actual.")
+    # Este mensaje solo se muestra si special_illustration_rares está vacío Y results_df está vacío
+    # y es la carga inicial sin filtros.
+    if special_illustration_rares.empty and results_df.empty and is_initial_unfiltered_load and bq_client and LATEST_SNAPSHOT_TABLE:
+         st.info("No se encontraron cartas con la rareza destacada o con precio en la base de datos actual.")
     # La tabla NO se muestra en este bloque (is_initial_unfiltered_load es True)
 
 
 # Mostrar la tabla SOLO si NO es carga inicial sin filtros (es decir, se aplicaron filtros)
-# O si results_df está vacío (esto cubre el caso donde no hay resultados para los filtros aplicados)
 elif not is_initial_unfiltered_load: # Tabla visible solo al aplicar filtros
     # --- Área Principal: Visualización de Resultados (AgGrid) ---
     st.header("Resultados de Cartas")
@@ -498,23 +543,24 @@ if st.session_state.selected_card_id_from_grid is not None:
 
     # Buscar la carta seleccionada en results_df. Si no está en results_df, buscar en all_card_metadata_df.
     # Usamos all_card_metadata_df como fallback para poder mostrar detalles básicos incluso si no hay precio fetchado.
-    source_df_for_details = results_df if (not results_df.empty and id_for_detail_view_from_session in results_df['id'].values) else all_card_metadata_df
+    # source_df_for_details = results_df if (not results_df.empty and id_for_detail_view_from_session in results_df['id'].values) else all_card_metadata_df
+    # Simplificamos la fuente, primero buscar en results_df, si no está, intentar en metadatos
+    source_df_for_details_primary = results_df
+    source_df_for_details_secondary = all_card_metadata_df
 
-    if not source_df_for_details.empty:
-        matched_rows = source_df_for_details[source_df_for_details['id'] == id_for_detail_view_from_session]
-        if not matched_rows.empty:
-             card_to_display_in_detail_section = matched_rows.iloc[0]
-             logger.info(f"DETAIL_VIEW_FOUND: Carta '{id_for_detail_view_from_session}' encontrada en la fuente de detalles.")
-        else:
-             # Si la carta seleccionada no se encuentra en ninguna de las fuentes (raro si all_card_metadata_df está completo)
-             logger.warning(f"DETAIL_VIEW_NOT_FOUND: ID '{id_for_detail_view_from_session}' NO ENCONTRADO en ninguna fuente de detalles. Resetting selection.")
-             st.session_state.selected_card_id_from_grid = None # Resetear selección si no se encuentra
-             st.rerun() # Re-ejecutar para limpiar la sección de detalle si la carta no se encuentra
+
+    if not source_df_for_details_primary.empty and id_for_detail_view_from_session in source_df_for_details_primary['id'].values:
+         card_to_display_in_detail_section = source_df_for_details_primary[source_df_for_details_primary['id'] == id_for_detail_view_from_session].iloc[0]
+         logger.info(f"DETAIL_VIEW_FOUND: Carta '{id_for_detail_view_from_session}' encontrada en results_df.")
+    elif not source_df_for_details_secondary.empty and id_for_detail_view_from_session in source_df_for_details_secondary['id'].values:
+         # Si no está en results_df (ej. seleccionó destacada y aplicó filtro), buscamos en metadatos
+         card_to_display_in_detail_section = source_df_for_details_secondary[source_df_for_details_secondary['id'] == id_for_detail_view_from_session].iloc[0]
+         logger.info(f"DETAIL_VIEW_FOUND: Carta '{id_for_detail_view_from_session}' encontrada en all_card_metadata_df.")
     else:
-         # Esto ocurre si la sección de detalles se intenta mostrar (hay un ID en state)
-         # pero ni results_df ni all_card_metadata_df tienen datos (lo cual es un error de carga inicial).
-         logger.warning(f"DETAIL_VIEW_NO_DATA: La fuente de datos para detalles está vacía, no se puede buscar ID '{id_for_detail_view_from_session}'.")
-         st.error("Error interno: No se cargaron los datos de metadatos.")
+         # Si la carta seleccionada no se encuentra en ninguna de las fuentes
+         logger.warning(f"DETAIL_VIEW_NOT_FOUND: ID '{id_for_detail_view_from_session}' NO ENCONTRADO en ninguna fuente de detalles. Resetting selection.")
+         st.session_state.selected_card_id_from_grid = None # Resetear selección si no se encuentra
+         st.rerun() # Re-ejecutar para limpiar la sección de detalle si la carta no se encuentra
 
 
     # Renderizar detalles si tenemos una carta
@@ -526,7 +572,17 @@ if st.session_state.selected_card_id_from_grid is not None:
         card_supertype_render = card_to_display_in_detail_section.get('supertype', "N/A")
         card_rarity_render = card_to_display_in_detail_section.get('rarity', "N/A")
         card_artist_render = card_to_display_in_detail_section.get('artist', None)
-        card_price_actual_render = card_to_display_in_detail_section.get('price', None) # Precio solo está en results_df
+        # El precio solo se mostrará si la carta encontrada proviene de results_df
+        card_price_actual_render = card_to_display_in_detail_section.get('price', None) # Precio solo está en results_df si la carta vino de ahí
+        if pd.isna(card_price_actual_render) and id_for_detail_view_from_session and not results_df.empty and id_for_detail_view_from_session in results_df['id'].values:
+             # Si el precio es NaN, pero la carta SÍ está en results_df, quizás el precio es realmente NaN.
+             # Opcional: re-buscar solo el precio si está en results_df pero vino de metadatos.
+             price_check = results_df[results_df['id'] == id_for_detail_view_from_session]['price'].iloc[0]
+             if pd.notna(price_check):
+                  card_price_actual_render = price_check
+                  logger.warning(f"DETAIL_VIEW: Precio NaN en fuente principal para {id_for_detail_view_from_session}, encontrado en results_df: {card_price_actual_render}")
+
+
         cardmarket_url_render = card_to_display_in_detail_section.get('cardmarket_url', None)
         tcgplayer_url_render = card_to_display_in_detail_section.get('tcgplayer_url', None)
         col_img, col_info = st.columns([1, 2])
@@ -550,11 +606,19 @@ if st.session_state.selected_card_id_from_grid is not None:
                 if pd.notna(card_price_actual_render): # Solo mostrar botón si hay precio actual para usar como feature
                      if st.button("🧠 Estimar Precio Futuro (MLP)", key=f"predict_mlp_btn_{card_id_render}"):
                          with st.spinner("Calculando estimación (MLP)..."):
+                             # Pasamos la Series completa, que ahora puede venir de metadatos o results_df.
+                             # Si vino de metadatos, card_price_actual_render será None,
+                             # pero la validación de pd.notna(card_price_actual_render) ya maneja esto.
+                             # La función predict_price_with_local_tf_layer también maneja precio 0/NaN.
                              pred_price = predict_price_with_local_tf_layer(local_tf_model_layer, ohe_local_preprocessor, scaler_local_preprocessor, card_to_display_in_detail_section)
                          if pred_price is not None:
-                             delta = pred_price - card_price_actual_render
-                             delta_color = "normal" if delta < -0.01 else ("inverse" if delta > 0.01 else "off")
-                             st.metric(label="Precio Estimado (MLP)", value=f"€{pred_price:.2f}", delta=f"{delta:+.2f}€", delta_color=delta_color)
+                             # Solo calcular delta si el precio actual estaba disponible
+                             if pd.notna(card_price_actual_render):
+                                 delta = pred_price - card_price_actual_render
+                                 delta_color = "normal" if delta < -0.01 else ("inverse" if delta > 0.01 else "off")
+                                 st.metric(label="Precio Estimado (MLP)", value=f"€{pred_price:.2f}", delta=f"{delta:+.2f}€ vs Actual", delta_color=delta_color)
+                             else:
+                                 st.metric(label="Precio Estimado (MLP)", value=f"€{pred_price:.2f}") # Mostrar solo la predicción si no hay precio actual
                          else: st.warning("No se pudo obtener estimación (MLP).")
                 else:
                      st.info("El precio actual no está disponible para esta carta, no se puede realizar la estimación con el modelo MLP.")
@@ -565,9 +629,9 @@ if st.session_state.selected_card_id_from_grid is not None:
 else:
     # Si no hay ninguna carta seleccionada en session_state, mostramos un mensaje guía.
     # Esto ocurrirá si results_df está vacío Y no es la carga inicial (aplicó filtro y no encontró)
-    # O si results_df está vacío en la carga inicial (no hay datos en BQ).
+    # O si results_df está vacío en la carga inicial (no hay datos en BQ), O si se resetea el estado.
     # La lógica de fallback ya seleccionó una carta si results_df NO está vacío.
-    # Por lo tanto, este 'else' solo se ejecuta si results_df está vacío.
+    # Por lo tanto, este 'else' solo se ejecuta si results_df está vacío Y session_state.selected_card_id_from_grid is None.
     if results_df.empty:
          if not is_initial_unfiltered_load: # Si se aplicaron filtros y no hubo resultados
               st.info("No se encontraron cartas con los filtros seleccionados.")
@@ -577,7 +641,12 @@ else:
                         st.info("No se encontraron cartas con precio en la base de datos actual.")
                    else: # No hay metadatos en absoluto (BQ error?)
                          st.error("Error interno: No se cargaron los datos de metadatos.")
+    else:
+         # Esto NO DEBERÍA OCURRIR con la lógica de fallback implementada,
+         # ya que el fallback seleccionará una carta aleatoria con precio si results_df no está vacío y no hay selección previa.
+         logger.error("UNEXPECTED_STATE: results_df not empty, but session_state.selected_card_id_from_grid is None and detail section not shown.")
+         # st.error("Error Interno: Estado inesperado de la aplicación.") # No mostrar error al usuario, solo en logs
 
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.4 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.5 | TF: {tf.__version__}")
