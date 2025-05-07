@@ -101,7 +101,6 @@ if bq_client is None:
 # --- FUNCIONES DE CARGA DE MODELO Y PREPROCESADORES ---
 @st.cache_resource
 def load_local_tf_model_as_layer(model_path):
-    # ... (código de carga del modelo TFSMLayer sin cambios) ...
     saved_model_pb_path = os.path.join(model_path, "saved_model.pb")
     if not os.path.exists(saved_model_pb_path):
         logger.error(f"LOAD_TF_LAYER: 'saved_model.pb' no encontrado en la ruta del modelo: {model_path}")
@@ -113,10 +112,8 @@ def load_local_tf_model_as_layer(model_path):
         logger.info(f"LOAD_TF_LAYER: Intentando cargar SavedModel como TFSMLayer desde: {model_path}")
         model_as_layer_obj = tf.keras.layers.TFSMLayer(model_path, call_endpoint='serving_default')
         logger.info(f"LOAD_TF_LAYER: SavedModel cargado exitosamente como TFSMLayer.")
-        try:
-            logger.info(f"LOAD_TF_LAYER: Call Signature (info interna): {model_as_layer_obj._call_signature}")
-        except AttributeError:
-            logger.warning("LOAD_TF_LAYER: No se pudo acceder a '_call_signature'. Esto es solo informativo.")
+        try: logger.info(f"LOAD_TF_LAYER: Call Signature (info interna): {model_as_layer_obj._call_signature}")
+        except AttributeError: logger.warning("LOAD_TF_LAYER: No se pudo acceder a '_call_signature'.")
         logger.info("LOAD_TF_LAYER: La inspección directa de 'structured_outputs' no está disponible en esta versión de TFSMLayer. "
                     f"Se usará la clave de salida configurada: '{_MODEL_OUTPUT_TENSOR_KEY_NAME}'. "
                     "Verifícala con `saved_model_cli` si hay problemas de predicción.")
@@ -128,10 +125,8 @@ def load_local_tf_model_as_layer(model_path):
                 "(puedes usar `saved_model_cli show --dir ruta/a/model_files --all` en tu terminal local).")
         return None
 
-
 @st.cache_resource
 def load_local_preprocessor(file_path, preprocessor_name="Preprocessor"):
-    # ... (código de carga de preprocesador sin cambios) ...
     if not os.path.exists(file_path):
         logger.error(f"LOAD_PREPROC: Archivo '{preprocessor_name}' no encontrado en: {file_path}")
         st.error(f"Error Crítico: El archivo preprocesador '{preprocessor_name}' no se encuentra en '{file_path}'. "
@@ -156,7 +151,6 @@ scaler_local_preprocessor = load_local_preprocessor(SCALER_PATH, "ScalerNuméric
 # --- Funciones Auxiliares (código de BigQuery, etc.) ---
 @st.cache_data(ttl=3600)
 def get_latest_snapshot_table(_client: bigquery.Client) -> str | None:
-    # ... (código sin cambios) ...
     query = f"SELECT table_id FROM `{_client.project}.{BIGQUERY_DATASET}`.__TABLES__ WHERE STARTS_WITH(table_id, 'monthly_') ORDER BY table_id DESC LIMIT 1"
     try:
         results = _client.query(query).result()
@@ -176,7 +170,6 @@ POKEMON_SUFFIXES_TO_REMOVE = [' VMAX', ' VSTAR', ' V-UNION', ' V', ' GX', ' EX',
 MULTI_WORD_BASE_NAMES = ["Mr. Mime", "Mime Jr.", "Farfetch'd", "Sirfetch'd", "Ho-Oh", "Porygon-Z", "Type: Null", "Tapu Koko", "Tapu Lele", "Tapu Bulu", "Tapu Fini", "Mr. Rime", "Indeedee M", "Indeedee F", "Great Tusk", "Iron Treads"] # yapf: disable
 
 def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
-    # ... (código sin cambios) ...
     if not isinstance(name_str, str) or supertype != 'Pokémon': return name_str
     for mw_base in multi_word_bases:
         if name_str.startswith(mw_base): return mw_base
@@ -187,7 +180,6 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
 
 @st.cache_data(ttl=3600)
 def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
-    # Query para metadatos (asegurando types y subtypes)
     query = f"""
     SELECT
         id, name, supertype, subtypes, types, 
@@ -204,7 +196,7 @@ def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
             return pd.DataFrame()
         for col_to_check in ['cardmarket_url', 'tcgplayer_url', 'types', 'subtypes']:
             if col_to_check not in df.columns:
-                df[col_to_check] = None # O un placeholder apropiado
+                df[col_to_check] = None
                 logger.warning(f"METADATA_BQ: Columna '{col_to_check}' no encontrada en metadatos, añadida como None/placeholder.")
         df['base_pokemon_name'] = df.apply(lambda row: get_true_base_name(row['name'], row['supertype'], POKEMON_SUFFIXES_TO_REMOVE, MULTI_WORD_BASE_NAMES), axis=1)
         logger.info(f"METADATA_BQ: Metadatos cargados y procesados. Total filas: {len(df)}.")
@@ -276,7 +268,7 @@ def predict_price_with_local_tf_layer(
 
         if _CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING:
             cat_df_slice = current_input_df_for_preprocessing[_CATEGORICAL_COLS_FOR_MODEL_PREPROCESSING].astype(str)
-            categorical_features_encoded_dense_array = ohe.transform(cat_df_slice) # <-- CORRECCIÓN APLICADA AQUÍ
+            categorical_features_encoded_dense_array = ohe.transform(cat_df_slice)
             processed_feature_parts.append(categorical_features_encoded_dense_array)
             logger.info(f"PREDICT_LOCAL_OHE: Categóricas codificadas (shape): {categorical_features_encoded_dense_array.shape}")
 
@@ -289,7 +281,7 @@ def predict_price_with_local_tf_layer(
         final_input_array_for_model = np.concatenate(processed_feature_parts, axis=1)
         logger.info(f"PREDICT_LOCAL_COMBINE: Array final para modelo (shape): {final_input_array_for_model.shape}")
 
-        EXPECTED_NUM_FEATURES = 4865 # Confirmado por saved_model_cli
+        EXPECTED_NUM_FEATURES = 4865
         if final_input_array_for_model.shape[1] != EXPECTED_NUM_FEATURES:
             logger.error(f"¡¡¡DESAJUSTE DE SHAPE EN LA ENTRADA DEL MODELO!!!")
             logger.error(f"    Modelo espera: {EXPECTED_NUM_FEATURES} características.")
@@ -305,7 +297,7 @@ def predict_price_with_local_tf_layer(
         if _MODEL_INPUT_TENSOR_KEY_NAME: # Que es 'inputs'
             model_input_feed_dict = {_MODEL_INPUT_TENSOR_KEY_NAME: final_input_tensor_for_model}
             logger.info(f"PREDICT_LOCAL_CALL: Llamando a TFSMLayer con diccionario desempaquetado: Clave='{_MODEL_INPUT_TENSOR_KEY_NAME}'")
-            raw_prediction_output = model_layer(**model_input_feed_dict) # <--- CORRECCIÓN APLICADA AQUÍ
+            raw_prediction_output = model_layer(**model_input_feed_dict) # CORRECCIÓN APLICADA
         else:
             logger.info("PREDICT_LOCAL_CALL: Llamando a TFSMLayer con tensor de entrada directo (no usado con firma 'inputs').")
             raw_prediction_output = model_layer(final_input_tensor_for_model)
@@ -326,7 +318,7 @@ def predict_price_with_local_tf_layer(
             return None
         else: predicted_value_tensor = raw_prediction_output[_MODEL_OUTPUT_TENSOR_KEY_NAME]
         logger.info(f"PREDICT_LOCAL_EXTRACT: Tensor (clave '{_MODEL_OUTPUT_TENSOR_KEY_NAME}' si dict). Shape: {predicted_value_tensor.shape}")
-        
+
         if predicted_value_tensor.shape == (1, 1) or predicted_value_tensor.shape == (1,):
             predicted_value_numeric = predicted_value_tensor.numpy()[0][0] if len(predicted_value_tensor.shape) == 2 else predicted_value_tensor.numpy()[0]
         else:
@@ -336,7 +328,7 @@ def predict_price_with_local_tf_layer(
         logger.info(f"PREDICT_LOCAL_NUMERIC: Valor numérico extraído: {predicted_value_numeric}")
 
         # --- PASO 5: Postprocesar ---
-        if _TARGET_PREDICTED_IS_LOG_TRANSFORMED: final_predicted_price = np.expm1(predicted_value_numeric)
+        if _TARGET_PREDICTED_IS_LOG_TRANSFORMED: final_predicted_price = np.expm1(predicted_value_numeric) # Usar expm1
         else: final_predicted_price = predicted_value_numeric
         logger.info(f"PREDICT_LOCAL_POSTPROC: Predicción final: {final_predicted_price}")
         return float(final_predicted_price)
@@ -386,16 +378,11 @@ sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 # --- Función para Obtener Datos de Cartas (principal AgGrid) ---
 @st.cache_data(ttl=600)
 def fetch_card_data_from_bq(
-    _client: bigquery.Client,
-    latest_table_path: str,
-    supertype_ui_filter: str | None,
-    sets_ui_filter: list,
-    names_ui_filter: list,
-    rarities_ui_filter: list,
-    sort_direction: str,
-    full_metadata_df_param: pd.DataFrame
+    _client: bigquery.Client, latest_table_path: str, supertype_ui_filter: str | None,
+    sets_ui_filter: list, names_ui_filter: list, rarities_ui_filter: list,
+    sort_direction: str, full_metadata_df_param: pd.DataFrame
 ) -> pd.DataFrame:
-    logger.info(f"FETCH_BQ_DATA: Iniciando con filtros - Supertype:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rarities:{len(rarities_ui_filter)}")
+    logger.info(f"FETCH_BQ_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
     if not latest_table_path: logger.error("FETCH_BQ_DATA_FAIL: 'latest_table_path' es None."); st.error("Error Interno: No se pudo determinar la tabla de precios."); return pd.DataFrame()
     ids_to_query_df = full_metadata_df_param.copy()
     if supertype_ui_filter and supertype_ui_filter != "Todos": ids_to_query_df = ids_to_query_df[ids_to_query_df['supertype'] == supertype_ui_filter]
@@ -410,7 +397,7 @@ def fetch_card_data_from_bq(
     query_sql_template = f"""
     SELECT
         meta.id, meta.name AS pokemon_name, meta.supertype,
-        meta.subtypes, meta.types, -- AÑADIDAS
+        meta.subtypes, meta.types, -- ASEGURADAS
         meta.set_name, meta.rarity, meta.artist, meta.images_large AS image_url,
         meta.cardmarket_url, meta.tcgplayer_url, prices.cm_trendPrice AS price
     FROM `{CARD_METADATA_TABLE}` AS meta
@@ -440,7 +427,7 @@ logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 
 
 # --- NUEVA SECCIÓN: Cartas Destacadas ---
-# Determinar si mostrar las cartas destacadas (solo en la carga inicial sin filtros)
+# Determinar si mostrar las cartas destacadas (solo en la carga inicial sin filtros y si hay metadatos)
 is_initial_unfiltered_load = (not selected_sets and not selected_names_to_filter and not selected_rarities and (selected_supertype == "Todos" or not selected_supertype))
 
 if is_initial_unfiltered_load and not all_card_metadata_df.empty:
@@ -451,44 +438,75 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
 
     if not special_illustration_rares.empty:
         st.header("Cartas Destacadas")
-        st.info(f"Explora algunas cartas de rareza '{FEATURED_RARITY}' o usa los filtros para buscar más.")
 
         # Seleccionar un número aleatorio de cartas destacadas para mostrar
         num_cards_to_show = min(len(special_illustration_rares), NUM_FEATURED_CARDS_TO_DISPLAY)
-        # Usar random.sample para selección sin reemplazo si tenemos más cartas que mostrar
-        if len(special_illustration_rares) > num_cards_to_show:
-             display_cards_list = random.sample(special_illustration_rares.index.tolist(), num_cards_to_show)
-             display_cards_df = special_illustration_rares.loc[display_cards_list].reset_index(drop=True)
-        else: # Mostrar todas si hay menos o igual que el número deseado
-             display_cards_df = special_illustration_rares.reset_index(drop=True)
+        # random.sample necesita una lista de índices/claves, no el DataFrame directamente
+        if len(special_illustration_rares) > 0: # Asegurarse de que haya cartas para samplear
+             sample_indices = random.sample(special_illustration_rares.index.tolist(), num_cards_to_show)
+             display_cards_df = special_illustration_rares.loc[sample_indices].reset_index(drop=True)
+        else: # No hay cartas de esta rareza, display_cards_df ya está vacío
+             display_cards_df = pd.DataFrame() # Asegurar que esté vacío si no hay coincidencias
 
-        # Mostrar las cartas en columnas
-        cols = st.columns(num_cards_to_show)
+        if not display_cards_df.empty:
+             # Mostrar las cartas en columnas
+             cols = st.columns(num_featured_cards_to_display) # Usar la constante directamente
 
-        for i, card in display_cards_df.iterrows():
-            with cols[i]:
-                card_id_featured = card.get('id')
-                card_name_featured = card.get('name', 'N/A') # Usar 'name' de metadatos para consistencia
-                card_set_featured = card.get('set_name', 'N/A')
-                image_url_featured = card.get('images_large')
+             for i, card in display_cards_df.iterrows():
+                 with cols[i]:
+                     card_id_featured = card.get('id')
+                     # Ya no mostramos el nombre aquí directamente
+                     card_set_featured = card.get('set_name', 'N/A') # Puedes usar esto en el caption si quieres
+                     image_url_featured = card.get('images_large')
 
-                st.subheader(card_name_featured)
-                if pd.notna(image_url_featured) and isinstance(image_url_featured, str):
-                    st.image(image_url_featured, caption=card_set_featured, width=150)
-                else:
-                    st.caption("Imagen no disponible")
+                     # Usar st.button con etiqueta HTML de imagen
+                     # Esto hace que la imagen sea clicable y actúe como un botón
+                     if pd.notna(image_url_featured) and isinstance(image_url_featured, str):
+                         # Etiqueta HTML con la imagen y un ancho fijo
+                         button_html_label = f"""
+                         <style>
+                         /* Estilo básico para hacer el botón más parecido a una imagen clicable */
+                         div[data-testid="stColumn"] button {{
+                             display: block !important; /* Hace el botón un bloque para controlar el ancho */
+                             margin: auto; /* Centra la imagen si el ancho de columna es mayor */
+                             padding: 0 !important; /* Elimina el padding del botón */
+                             border: none !important; /* Elimina el borde del botón */
+                             background-color: transparent !important; /* Fondo transparente */
+                             cursor: pointer !important; /* Muestra cursor de clic */
+                             text-align: center !important; /* Centra el contenido */
+                         }}
+                          div[data-testid="stColumn"] button img {{
+                              display: block; /* Asegura que la imagen no tenga espacio extra abajo */
+                          }}
+                          div[data-testid="stColumn"] button:hover {{
+                              opacity: 0.8; /* Efecto hover simple */
+                          }}
+                         </style>
+                         <img src='{image_url_featured}' width='150' style='display:block; margin: auto; max-width: 100%; height: auto;'>
+                         """
+                         # El caption se mostrará en la sección de detalles
+                         if st.button(button_html_label, key=f"featured_card_click_{card_id_featured}", unsafe_allow_html=True):
+                             logger.info(f"FEATURED_CARD_CLICK: Carta destacada '{card_id_featured}' seleccionada. Re-ejecutando.")
+                             st.session_state.selected_card_id_from_grid = card_id_featured # Usar la misma key que AgGrid
+                             st.rerun() # Re-ejecutar para mostrar detalles
+                     else:
+                         # Mostrar un placeholder si la imagen no está disponible
+                         st.markdown(f"**{card_name_featured}**") # Mostrar el nombre si no hay imagen
+                         st.caption("Imagen no disponible")
+                         # Si quieres que el placeholder también sea "clicable" (como un botón de texto)
+                         if st.button("Ver Detalles", key=f"featured_card_click_placeholder_{card_id_featured}"):
+                              logger.info(f"FEATURED_CARD_CLICK: Placeholder '{card_id_featured}' seleccionado. Re-ejecutando.")
+                              st.session_state.selected_card_id_from_grid = card_id_featured
+                              st.rerun()
 
-                # Botón para seleccionar esta carta y mostrar sus detalles
-                select_key = f"select_featured_card_btn_{card_id_featured}"
-                if st.button("Ver Detalles", key=select_key):
-                    logger.info(f"FEATURED_CARD_CLICK: Carta destacada '{card_id_featured}' seleccionada. Re-ejecutando.")
-                    st.session_state.selected_card_id_from_grid = card_id_featured # Usar la misma key que AgGrid
-                    st.rerun() # Re-ejecutar para mostrar detalles
 
-        st.markdown("---") # Separador
+             st.markdown("---") # Separador visual después de las destacadas
 
-    else:
-        logger.info(f"FEATURED_CARDS: No se encontraron cartas con rareza '{FEATURED_RARITY}'.")
+        # Si no hay cartas destacadas después del filtro
+        elif special_illustration_rares.empty:
+             logger.info(f"FEATURED_CARDS: No se encontraron cartas con rareza '{FEATURED_RARITY}' en los metadatos cargados.")
+             # Opcional: Mostrar un mensaje si no hay destacadas
+             # st.info(f"No se encontraron cartas de rareza '{FEATURED_RARITY}' para destacar. Usa los filtros.")
 
 
 # --- Área Principal: Visualización de Resultados (AgGrid) ---
@@ -520,7 +538,6 @@ if not results_df_for_aggrid_display.empty:
 else: logger.info("AGGRID_RENDERING: No hay datos para mostrar en AgGrid.")
 
 # --- Lógica de Manejo de Clic en AgGrid ---
-# ... (código de manejo de clic de AgGrid sin cambios) ...
 if grid_response:
     logger.debug(f"AGGRID_HANDLER: Procesando grid_response. Tipo de selected_rows: {type(grid_response.get('selected_rows'))}")
     newly_selected_id_from_grid_click = None; selected_rows_data_from_grid = grid_response.get('selected_rows')
@@ -541,8 +558,6 @@ if grid_response:
         st.rerun()
 
 # --- Sección de Detalle de Carta y Predicción ---
-# Esta sección usa la misma key de session_state, por lo que se actualizará
-# automáticamente al seleccionar una carta destacada o de la tabla.
 st.divider(); st.header("Detalle de Carta Seleccionada")
 card_to_display_in_detail_section = None
 id_for_detail_view_from_session = st.session_state.get('selected_card_id_from_grid')
@@ -554,10 +569,10 @@ if card_to_display_in_detail_section is None and not results_df.empty:
     card_to_display_in_detail_section = results_df.iloc[0]
     fallback_id = card_to_display_in_detail_section.get('id')
     if fallback_id and pd.notna(fallback_id) and st.session_state.get('selected_card_id_from_grid') != fallback_id :
-        st.session_state.selected_card_id_from_grid = fallback_id
+        st.session_state.selected_card_id_from_grid = fallback_id # No re-run aquí
 if card_to_display_in_detail_section is not None and isinstance(card_to_display_in_detail_section, pd.Series) and not card_to_display_in_detail_section.empty:
     card_id_render = card_to_display_in_detail_section.get('id', "N/A")
-    card_name_render = card_to_display_in_detail_section.get('pokemon_name', "N/A")
+    card_name_render = card_to_display_in_detail_section.get('pokemon_name', "N/A") # Usar los nombres de results_df
     card_set_render = card_to_display_in_detail_section.get('set_name', "N/A")
     card_image_url_render = card_to_display_in_detail_section.get('image_url', None)
     card_supertype_render = card_to_display_in_detail_section.get('supertype', "N/A")
@@ -595,20 +610,24 @@ if card_to_display_in_detail_section is not None and isinstance(card_to_display_
                 else: st.warning("Estimación MLP no posible sin precio actual.")
         else: st.warning("Modelo MLP o preprocesadores no cargados.")
 else:
-    # Este mensaje solo aparece si no hay carta seleccionada Y results_df está vacío
-    if not results_df.empty:
-        # Si hay resultados pero ninguno seleccionado, este mensaje no se muestra si se muestran destacadas.
-        # Si no hay destacadas Y hay resultados, se muestra AgGrid, y el mensaje de AgGrid guía.
-        pass # No mostramos este mensaje aquí para no duplicar si hay destacadas/tabla.
+    if not results_df.empty: pass # Mensajes de tabla o destacadas ya cubren esto
     else:
-        # Si no hay resultados en absoluto (results_df vacío) Y no se pudo mostrar detalle, mostrar este.
-         if not is_initial_unfiltered_load: # Solo si el usuario aplicó filtros y no encontró nada
+         if not is_initial_unfiltered_load: # Solo si el usuario aplicó filtros
               st.info("No se encontraron cartas con los filtros seleccionados.")
 
-
-# --- Mensajes finales (ajustados para no duplicar mensajes si hay destacadas) ---
-# No mostrar mensajes finales aquí, ya que los mensajes de "Cartas Destacadas" o "Resultados de Cartas" o la sección de detalle ya manejan la mayoría de los casos.
-
-
-st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v0.8 | TF: {tf.__version__}")
+# --- Mensajes finales (ajustados) ---
+if not results_df_for_aggrid_display.empty: pass
+elif not results_df.empty: st.info(f"Se encontraron {len(results_df)} resultados que coinciden con los filtros, pero no se muestran en la tabla. Refina filtros.")
+else:
+    if bq_client and LATEST_SNAPSHOT_TABLE:
+         # Si no hay destacadas Y no hay resultados en la tabla, este mensaje es adecuado.
+         # Si hay destacadas pero no tabla, el mensaje de destacadas + sección detalle vacío guían.
+         # Si no hay destacadas Y no hay resultados, este mensaje es adecuado.
+         # Podríamos añadir un check si se mostraron destacadas o no para refinar más, pero por ahora está OK.
+         if not all_card_metadata_df[all_card_metadata_df['rarity'] == FEATURED_RARITY].empty:
+              # Si hay destacadas, el usuario ya vio algunas.
+              pass # Ya se guió arriba con las destacadas
+         else:
+              # Si no hay destacadas de esa rareza y results_df está vacío
+              st.info("No se encontraron cartas que coincidan con los filtros seleccionados.")
+st.sidebar.markdown("---"); st.sidebar.caption(f"Pokémon TCG Explorer v0.8.1 | TF: {tf.__version__}")
