@@ -281,7 +281,7 @@ def predict_price_with_local_tf_layer(
         final_input_array_for_model = np.concatenate(processed_feature_parts, axis=1)
         logger.info(f"PREDICT_LOCAL_COMBINE: Array final para modelo (shape): {final_input_array_for_model.shape}")
 
-        EXPECTED_NUM_FEATURES = 4865 # Confirmado por saved_model_cli
+        EXPECTED_NUM_FEATURES = 4865
         if final_input_array_for_model.shape[1] != EXPECTED_NUM_FEATURES:
             logger.error(f"¡¡¡DESAJUSTE DE SHAPE EN LA ENTRADA DEL MODELO!!!")
             logger.error(f"    Modelo espera: {EXPECTED_NUM_FEATURES} características.")
@@ -297,7 +297,7 @@ def predict_price_with_local_tf_layer(
         if _MODEL_INPUT_TENSOR_KEY_NAME: # Que es 'inputs'
             model_input_feed_dict = {_MODEL_INPUT_TENSOR_KEY_NAME: final_input_tensor_for_model}
             logger.info(f"PREDICT_LOCAL_CALL: Llamando a TFSMLayer con diccionario desempaquetado: Clave='{_MODEL_INPUT_TENSOR_KEY_NAME}'")
-            raw_prediction_output = model_layer(**model_input_feed_dict) # CORRECCIÓN APLICADA
+            raw_prediction_output = model_layer(**model_input_feed_dict)
         else:
             logger.info("PREDICT_LOCAL_CALL: Llamando a TFSMLayer con tensor de entrada directo (no usado con firma 'inputs').")
             raw_prediction_output = model_layer(final_input_tensor_for_model)
@@ -439,8 +439,8 @@ div[data-testid="stColumn"] button img {
     display: block; margin: auto; max-width: 100%; height: auto;
 }
 div[data-testid="stColumn"] button:hover img { opacity: 0.8; }
-/* Intento para ocultar el texto del label */
-div[data-testid="stColumn"] button > div > p { display: none; }
+/* Ocultar el texto por defecto del botón */
+div[data-testid="stColumn"] button p { display: none; }
 /* Intento adicional para asegurar que no se muestre texto */
 div[data-testid="stColumn"] button > div { line-height: 0; }
 </style>
@@ -453,6 +453,7 @@ is_initial_unfiltered_load = (not selected_sets and not selected_names_to_filter
 # Solo mostrar esta sección si estamos en la carga inicial y hay metadatos
 if is_initial_unfiltered_load and not all_card_metadata_df.empty:
     st.header("Cartas Destacadas") # Mantener el título
+
     # Filtrar por rareza destacada
     special_illustration_rares = all_card_metadata_df[
         all_card_metadata_df['rarity'] == FEATURED_RARITY
@@ -478,12 +479,8 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
                          # La etiqueta del botón es solo un espacio en blanco
                          # La imagen se muestra DENTRO del botón gracias al CSS
                          # El alt text de la imagen es importante para accesibilidad
-                         button_label = f"""<img src='{image_url_featured}' width='150' alt='{card_name_featured}'>"""
-
-                         # CORRECTO: unsafe_allow_html=True va con st.markdown si usáramos markdown como label,
-                         # PERO para st.button no lo usamos. La etiqueta *debe* ser hashable.
-                         # Usaremos el HTML de la imagen como etiqueta. Si la URL es estable, la etiqueta es hashable.
-                         if st.button(button_label, key=f"featured_card_click_{card_id_featured}", unsafe_allow_html=True): # <--- AQUI DEBE HABER OTRO ERROR
+                         # No usamos unsafe_allow_html=True en st.button
+                         if st.button(" ", key=f"featured_card_click_{card_id_featured}"): # <--- CORRECCIÓN APLICADA AQUÍ (REMOVIDO unsafe_allow_html=True)
                               logger.info(f"FEATURED_CARD_CLICK: Carta destacada '{card_id_featured}' seleccionada. Re-ejecutando.")
                               st.session_state.selected_card_id_from_grid = card_id_featured
                               st.rerun()
@@ -612,4 +609,4 @@ else:
          else: st.info("No se encontraron cartas que coincidan con los filtros seleccionados.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v0.8.5 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v0.8.6 | TF: {tf.__version__}")
