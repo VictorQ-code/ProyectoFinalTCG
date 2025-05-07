@@ -10,12 +10,12 @@ import os
 import tensorflow as tf
 import joblib
 import typing
-import random # Necesario para la selección aleatoria
+import random
 
 # --- Configuración Inicial ---
 st.set_page_config(layout="wide", page_title="Pokémon TCG Explorer")
 logging.basicConfig(
-    level=logging.INFO, # Puedes cambiar a logging.DEBUG para más detalle si depuras
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(module)s - %(funcName)s - %(lineno)d - %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -182,7 +182,7 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
 def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
     query = f"""
     SELECT
-        id, name, supertype, subtypes, types, 
+        id, name, supertype, subtypes, types,
         rarity, set_id, set_name,
         artist, images_large, cardmarket_url, tcgplayer_url
     FROM `{CARD_METADATA_TABLE}`
@@ -431,91 +431,68 @@ logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 is_initial_unfiltered_load = (not selected_sets and not selected_names_to_filter and not selected_rarities and (selected_supertype == "Todos" or not selected_supertype))
 
 if is_initial_unfiltered_load and not all_card_metadata_df.empty:
+    st.header("Cartas Destacadas") # Mantener el título
     # Filtrar por rareza destacada
     special_illustration_rares = all_card_metadata_df[
         all_card_metadata_df['rarity'] == FEATURED_RARITY
     ].copy()
 
     if not special_illustration_rares.empty:
-        st.header("Cartas Destacadas")
-
         # Seleccionar un número aleatorio de cartas destacadas para mostrar
         num_cards_to_show = min(len(special_illustration_rares), NUM_FEATURED_CARDS_TO_DISPLAY)
-        # random.sample necesita una lista de índices/claves, no el DataFrame directamente
-        if len(special_illustration_rares) > 0: # Asegurarse de que haya cartas para samplear
+        if len(special_illustration_rares) > 0:
              sample_indices = random.sample(special_illustration_rares.index.tolist(), num_cards_to_show)
              display_cards_df = special_illustration_rares.loc[sample_indices].reset_index(drop=True)
-        else: # No hay cartas de esta rareza, display_cards_df ya está vacío
-             display_cards_df = pd.DataFrame() # Asegurar que esté vacío si no hay coincidencias
+        else:
+             display_cards_df = pd.DataFrame()
 
         if not display_cards_df.empty:
-             # Mostrar las cartas en columnas
-             cols = st.columns(num_featured_cards_to_display) # Usar la constante directamente
+             cols = st.columns(num_cards_to_show) # <-- CORRECCIÓN APLICADA AQUÍ
 
              for i, card in display_cards_df.iterrows():
                  with cols[i]:
                      card_id_featured = card.get('id')
-                     # Ya no mostramos el nombre aquí directamente
-                     card_set_featured = card.get('set_name', 'N/A') # Puedes usar esto en el caption si quieres
+                     card_name_featured = card.get('name', 'N/A')
                      image_url_featured = card.get('images_large')
 
                      # Usar st.button con etiqueta HTML de imagen
-                     # Esto hace que la imagen sea clicable y actúe como un botón
                      if pd.notna(image_url_featured) and isinstance(image_url_featured, str):
-                         # Etiqueta HTML con la imagen y un ancho fijo
                          button_html_label = f"""
                          <style>
-                         /* Estilo básico para hacer el botón más parecido a una imagen clicable */
                          div[data-testid="stColumn"] button {{
-                             display: block !important; /* Hace el botón un bloque para controlar el ancho */
-                             margin: auto; /* Centra la imagen si el ancho de columna es mayor */
-                             padding: 0 !important; /* Elimina el padding del botón */
-                             border: none !important; /* Elimina el borde del botón */
-                             background-color: transparent !important; /* Fondo transparente */
-                             cursor: pointer !important; /* Muestra cursor de clic */
-                             text-align: center !important; /* Centra el contenido */
+                             display: block !important; margin: auto; padding: 0 !important;
+                             border: none !important; background-color: transparent !important;
+                             cursor: pointer !important; text-align: center !important;
                          }}
-                          div[data-testid="stColumn"] button img {{
-                              display: block; /* Asegura que la imagen no tenga espacio extra abajo */
-                          }}
-                          div[data-testid="stColumn"] button:hover {{
-                              opacity: 0.8; /* Efecto hover simple */
-                          }}
+                          div[data-testid="stColumn"] button img {{ display: block; margin: auto; max-width: 100%; height: auto; }}
+                          div[data-testid="stColumn"] button:hover {{ opacity: 0.8; }}
                          </style>
-                         <img src='{image_url_featured}' width='150' style='display:block; margin: auto; max-width: 100%; height: auto;'>
+                         <img src='{image_url_featured}' width='150' alt='{card_name_featured}'>
                          """
-                         # El caption se mostrará en la sección de detalles
                          if st.button(button_html_label, key=f"featured_card_click_{card_id_featured}", unsafe_allow_html=True):
                              logger.info(f"FEATURED_CARD_CLICK: Carta destacada '{card_id_featured}' seleccionada. Re-ejecutando.")
-                             st.session_state.selected_card_id_from_grid = card_id_featured # Usar la misma key que AgGrid
-                             st.rerun() # Re-ejecutar para mostrar detalles
+                             st.session_state.selected_card_id_from_grid = card_id_featured
+                             st.rerun()
                      else:
                          # Mostrar un placeholder si la imagen no está disponible
-                         st.markdown(f"**{card_name_featured}**") # Mostrar el nombre si no hay imagen
-                         st.caption("Imagen no disponible")
-                         # Si quieres que el placeholder también sea "clicable" (como un botón de texto)
-                         if st.button("Ver Detalles", key=f"featured_card_click_placeholder_{card_id_featured}"):
+                         st.warning("Imagen no disponible")
+                         # Puedes hacer el texto del nombre o un botón de texto clicable si quieres un fallback
+                         if st.button(card_name_featured, key=f"featured_card_click_placeholder_{card_id_featured}"):
                               logger.info(f"FEATURED_CARD_CLICK: Placeholder '{card_id_featured}' seleccionado. Re-ejecutando.")
                               st.session_state.selected_card_id_from_grid = card_id_featured
                               st.rerun()
 
-
              st.markdown("---") # Separador visual después de las destacadas
 
-        # Si no hay cartas destacadas después del filtro
         elif special_illustration_rares.empty:
-             logger.info(f"FEATURED_CARDS: No se encontraron cartas con rareza '{FEATURED_RARITY}' en los metadatos cargados.")
-             # Opcional: Mostrar un mensaje si no hay destacadas
-             # st.info(f"No se encontraron cartas de rareza '{FEATURED_RARITY}' para destacar. Usa los filtros.")
+             logger.info(f"FEATURED_CARDS: No se encontraron cartas con rareza '{FEATURED_RARITY}'.")
 
 
 # --- Área Principal: Visualización de Resultados (AgGrid) ---
-# Esta sección ahora viene DESPUÉS de las cartas destacadas si se muestran.
 st.header("Resultados de Cartas")
 if 'selected_card_id_from_grid' not in st.session_state: st.session_state.selected_card_id_from_grid = None
 logger.info(f"AGGRID_RENDERING: ID en session_state ANTES de AgGrid: {st.session_state.get('selected_card_id_from_grid')}")
 results_df_for_aggrid_display = results_df
-# La lógica de limitación de filas es la misma
 if is_initial_unfiltered_load and len(results_df) > MAX_ROWS_NO_FILTER:
     logger.info(f"AGGRID_RENDERING: Limitando display a {MAX_ROWS_NO_FILTER} filas de {len(results_df)}.")
     st.info(f"Mostrando los primeros {MAX_ROWS_NO_FILTER} de {len(results_df)} resultados. Aplica filtros.")
@@ -545,7 +522,6 @@ if grid_response:
         try:
             first_selected_row_as_series = selected_rows_data_from_grid.iloc[0]
             if 'ID' in first_selected_row_as_series: newly_selected_id_from_grid_click = first_selected_row_as_series['ID']
-            logger.info(f"AGGRID_HANDLER_DF: Fila seleccionada vía DataFrame. ID: {newly_selected_id_from_grid_click if newly_selected_id_from_grid_click else 'No ID'}")
         except Exception as e_aggrid_df: logger.error(f"AGGRID_HANDLER_DF: Error: {e_aggrid_df}", exc_info=True)
     elif isinstance(selected_rows_data_from_grid, list) and selected_rows_data_from_grid:
         try:
@@ -569,10 +545,10 @@ if card_to_display_in_detail_section is None and not results_df.empty:
     card_to_display_in_detail_section = results_df.iloc[0]
     fallback_id = card_to_display_in_detail_section.get('id')
     if fallback_id and pd.notna(fallback_id) and st.session_state.get('selected_card_id_from_grid') != fallback_id :
-        st.session_state.selected_card_id_from_grid = fallback_id # No re-run aquí
+        st.session_state.selected_card_id_from_grid = fallback_id
 if card_to_display_in_detail_section is not None and isinstance(card_to_display_in_detail_section, pd.Series) and not card_to_display_in_detail_section.empty:
     card_id_render = card_to_display_in_detail_section.get('id', "N/A")
-    card_name_render = card_to_display_in_detail_section.get('pokemon_name', "N/A") # Usar los nombres de results_df
+    card_name_render = card_to_display_in_detail_section.get('pokemon_name', "N/A")
     card_set_render = card_to_display_in_detail_section.get('set_name', "N/A")
     card_image_url_render = card_to_display_in_detail_section.get('image_url', None)
     card_supertype_render = card_to_display_in_detail_section.get('supertype', "N/A")
@@ -610,9 +586,9 @@ if card_to_display_in_detail_section is not None and isinstance(card_to_display_
                 else: st.warning("Estimación MLP no posible sin precio actual.")
         else: st.warning("Modelo MLP o preprocesadores no cargados.")
 else:
-    if not results_df.empty: pass # Mensajes de tabla o destacadas ya cubren esto
+    if not results_df.empty: pass
     else:
-         if not is_initial_unfiltered_load: # Solo si el usuario aplicó filtros
+         if not is_initial_unfiltered_load:
               st.info("No se encontraron cartas con los filtros seleccionados.")
 
 # --- Mensajes finales (ajustados) ---
@@ -620,14 +596,8 @@ if not results_df_for_aggrid_display.empty: pass
 elif not results_df.empty: st.info(f"Se encontraron {len(results_df)} resultados que coinciden con los filtros, pero no se muestran en la tabla. Refina filtros.")
 else:
     if bq_client and LATEST_SNAPSHOT_TABLE:
-         # Si no hay destacadas Y no hay resultados en la tabla, este mensaje es adecuado.
-         # Si hay destacadas pero no tabla, el mensaje de destacadas + sección detalle vacío guían.
-         # Si no hay destacadas Y no hay resultados, este mensaje es adecuado.
-         # Podríamos añadir un check si se mostraron destacadas o no para refinar más, pero por ahora está OK.
-         if not all_card_metadata_df[all_card_metadata_df['rarity'] == FEATURED_RARITY].empty:
-              # Si hay destacadas, el usuario ya vio algunas.
-              pass # Ya se guió arriba con las destacadas
-         else:
-              # Si no hay destacadas de esa rareza y results_df está vacío
-              st.info("No se encontraron cartas que coincidan con los filtros seleccionados.")
-st.sidebar.markdown("---"); st.sidebar.caption(f"Pokémon TCG Explorer v0.8.1 | TF: {tf.__version__}")
+         if not all_card_metadata_df[all_card_metadata_df['rarity'] == FEATURED_RARITY].empty: pass
+         else: st.info("No se encontraron cartas que coincidan con los filtros seleccionados.")
+
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Pokémon TCG Explorer v0.8.2 | TF: {tf.__version__}")
