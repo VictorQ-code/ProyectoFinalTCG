@@ -116,7 +116,7 @@ def load_local_tf_model_as_layer(model_path):
         except AttributeError: logger.warning("LOAD_TF_LAYER: No se pudo acceder a '_call_signature'.")
         logger.info("LOAD_TF_LAYER: La inspección directa de 'structured_outputs' no está disponible en esta versión de TFSMLayer. "
                     f"Se usará la clave de salida configurada: '{_MODEL_OUTPUT_TENSOR_KEY_NAME}'. "
-                    "Verifícala con `saved_model_cli` if there are prediction issues.") # English in log message
+                    "Verifícala con `saved_model_cli` if there are prediction issues.")
         return model_as_layer_obj
     except Exception as e:
         logger.error(f"LOAD_TF_LAYER: Error crítico al cargar SavedModel como TFSMLayer desde {model_path}: {e}", exc_info=True)
@@ -362,7 +362,7 @@ logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 if 'selected_card_id_from_grid' not in st.session_state:
     st.session_state.selected_card_id_from_grid = None
     logger.info("SESSION_STATE_INIT: 'selected_card_id_from_grid' inicializado a None.")
-logger.info(f"DETAIL_VIEW_ENTRY (pre-render): ID en session_state: {st.session_state.get('selected_card_id_from_grid')}")
+# logger.info(f"DETAIL_VIEW_ENTRY (pre-render): ID en session_state: {st.session_state.get('selected_card_id_from_grid')}") # Moved log below
 
 
 # --- Lógica para establecer la carta seleccionada al inicio si no hay nada ---
@@ -432,16 +432,17 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
     # Si es carga inicial SIN filtros PERO no se mostraron destacadas
     # Mostrar un mensaje antes del detalle si no hay destacadas
     # Si hay destacadas, ya se mostraron y no necesitamos mensaje extra aquí.
+    # Este mensaje solo se muestra si results_df está vacío Y no se mostraron destacadas en la carga inicial
     if special_illustration_rares.empty and results_df.empty and bq_client and LATEST_SNAPSHOT_TABLE:
          st.info("No se encontraron cartas con la rareza destacada o en la base de datos actual.")
     # La tabla NO se muestra en este bloque (is_initial_unfiltered_load es True)
 
 
 # Mostrar la tabla SOLO si NO es carga inicial sin filtros (es decir, se aplicaron filtros)
+# O si results_df está vacío (esto cubre el caso donde no hay resultados para los filtros aplicados)
 elif not is_initial_unfiltered_load: # Tabla visible solo al aplicar filtros
     # --- Área Principal: Visualización de Resultados (AgGrid) ---
     st.header("Resultados de Cartas")
-    # ... (resto del código de AgGrid y manejo de selección sin cambios) ...
     # st.session_state.selected_card_id_from_grid ya se inicializó y se estableció fallback arriba
     logger.info(f"AGGRID_RENDERING: ID en session_state ANTES de AgGrid: {st.session_state.get('selected_card_id_from_grid')}")
     results_df_for_aggrid_display = results_df # Usar el DF ya cargado
@@ -488,7 +489,7 @@ elif not is_initial_unfiltered_load: # Tabla visible solo al aplicar filtros
     # else: logger.debug("AgGrid section was displayed but grid_response is None.")
 
 
-# --- Sección de Detalle de Carta y Predicción ---
+# --- Sección de Detalle de Carta Seleccionada y Predicción ---
 # Esta sección solo se intenta mostrar si hay una carta seleccionada en session_state.
 if st.session_state.selected_card_id_from_grid is not None:
     st.divider(); st.header("Detalle de Carta Seleccionada")
@@ -508,7 +509,7 @@ if st.session_state.selected_card_id_from_grid is not None:
              # Si la carta seleccionada no se encuentra en ninguna de las fuentes (raro si all_card_metadata_df está completo)
              logger.warning(f"DETAIL_VIEW_NOT_FOUND: ID '{id_for_detail_view_from_session}' NO ENCONTRADO en ninguna fuente de detalles. Resetting selection.")
              st.session_state.selected_card_id_from_grid = None # Resetear selección si no se encuentra
-             st.rerun() # Re-ejecutar para limpiar la sección de detalle
+             st.rerun() # Re-ejecutar para limpiar la sección de detalle si la carta no se encuentra
     else:
          # Esto ocurre si la sección de detalles se intenta mostrar (hay un ID en state)
          # pero ni results_df ni all_card_metadata_df tienen datos (lo cual es un error de carga inicial).
@@ -525,7 +526,7 @@ if st.session_state.selected_card_id_from_grid is not None:
         card_supertype_render = card_to_display_in_detail_section.get('supertype', "N/A")
         card_rarity_render = card_to_display_in_detail_section.get('rarity', "N/A")
         card_artist_render = card_to_display_in_detail_section.get('artist', None)
-        card_price_actual_render = card_to_display_in_detail_section.get('price', None) # Precio solo está en results_df (si la carta vino de ahí)
+        card_price_actual_render = card_to_display_in_detail_section.get('price', None) # Precio solo está en results_df
         cardmarket_url_render = card_to_display_in_detail_section.get('cardmarket_url', None)
         tcgplayer_url_render = card_to_display_in_detail_section.get('tcgplayer_url', None)
         col_img, col_info = st.columns([1, 2])
@@ -560,6 +561,7 @@ if st.session_state.selected_card_id_from_grid is not None:
             else:
                  st.warning("El modelo MLP o sus preprocesadores no están cargados correctamente.")
 
+
 else:
     # Si no hay ninguna carta seleccionada en session_state, mostramos un mensaje guía.
     # Esto ocurrirá si results_df está vacío Y no es la carga inicial (aplicó filtro y no encontró)
@@ -576,5 +578,6 @@ else:
                    else: # No hay metadatos en absoluto (BQ error?)
                          st.error("Error interno: No se cargaron los datos de metadatos.")
 
+
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.3 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.4 | TF: {tf.__version__}")
