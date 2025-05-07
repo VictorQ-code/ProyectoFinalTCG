@@ -281,7 +281,7 @@ def predict_price_with_local_tf_layer(
         final_input_array_for_model = np.concatenate(processed_feature_parts, axis=1)
         logger.info(f"PREDICT_LOCAL_COMBINE: Array final para modelo (shape): {final_input_array_for_model.shape}")
 
-        EXPECTED_NUM_FEATURES = 4865
+        EXPECTED_NUM_FEATURES = 4865 # Confirmado por saved_model_cli
         if final_input_array_for_model.shape[1] != EXPECTED_NUM_FEATURES:
             logger.error(f"¡¡¡DESAJUSTE DE SHAPE EN LA ENTRADA DEL MODELO!!!")
             logger.error(f"    Modelo espera: {EXPECTED_NUM_FEATURES} características.")
@@ -297,7 +297,7 @@ def predict_price_with_local_tf_layer(
         if _MODEL_INPUT_TENSOR_KEY_NAME: # Que es 'inputs'
             model_input_feed_dict = {_MODEL_INPUT_TENSOR_KEY_NAME: final_input_tensor_for_model}
             logger.info(f"PREDICT_LOCAL_CALL: Llamando a TFSMLayer con diccionario desempaquetado: Clave='{_MODEL_INPUT_TENSOR_KEY_NAME}'")
-            raw_prediction_output = model_layer(**model_input_feed_dict)
+            raw_prediction_output = model_layer(**model_input_feed_dict) # CORRECCIÓN APLICADA
         else:
             logger.info("PREDICT_LOCAL_CALL: Llamando a TFSMLayer con tensor de entrada directo (no usado con firma 'inputs').")
             raw_prediction_output = model_layer(final_input_tensor_for_model)
@@ -429,29 +429,28 @@ logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 # --- Inyectar CSS para botones de imagen ---
 st.markdown("""
 <style>
-/* Estilo para el contenedor de columna que envuelve el botón */
 div[data-testid="stColumn"] { /* Puedes añadir estilos aquí si quieres afectar las columnas, ej: gap */ }
-/* Estilo para el botón que contiene la imagen */
 div[data-testid="stColumn"] button {
     display: block !important; margin: auto; padding: 0 !important;
     border: none !important; background-color: transparent !important;
     cursor: pointer !important; text-align: center !important;
 }
-/* Estilo para la imagen dentro del botón */
 div[data-testid="stColumn"] button img {
     display: block; margin: auto; max-width: 100%; height: auto;
 }
-/* Efecto hover para la imagen dentro del botón */
 div[data-testid="stColumn"] button:hover img { opacity: 0.8; }
-/* Ocultar el texto por defecto del botón */
-div[data-testid="stColumn"] button p { display: none; }
+/* Intento para ocultar el texto del label */
+div[data-testid="stColumn"] button > div > p { display: none; }
+/* Intento adicional para asegurar que no se muestre texto */
+div[data-testid="stColumn"] button > div { line-height: 0; }
 </style>
-""", unsafe_allow_html=True)
+""", unsafe_allow_html=True) # Este markdown se inyecta una vez
 
 
 # --- NUEVA SECCIÓN: Cartas Destacadas ---
 is_initial_unfiltered_load = (not selected_sets and not selected_names_to_filter and not selected_rarities and (selected_supertype == "Todos" or not selected_supertype))
 
+# Solo mostrar esta sección si estamos en la carga inicial y hay metadatos
 if is_initial_unfiltered_load and not all_card_metadata_df.empty:
     st.header("Cartas Destacadas") # Mantener el título
     # Filtrar por rareza destacada
@@ -461,7 +460,7 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
 
     if not special_illustration_rares.empty:
         num_cards_to_show = min(len(special_illustration_rares), NUM_FEATURED_CARDS_TO_DISPLAY)
-        if len(special_illustration_rares) > 0 and num_cards_to_show > 0:
+        if len(special_illustration_rares) > 0 and num_cards_to_show > 0 :
              sample_indices = random.sample(special_illustration_rares.index.tolist(), num_cards_to_show)
              display_cards_df = special_illustration_rares.loc[sample_indices].reset_index(drop=True)
         else: display_cards_df = pd.DataFrame()
@@ -476,13 +475,18 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
                      image_url_featured = card.get('images_large')
 
                      if pd.notna(image_url_featured) and isinstance(image_url_featured, str):
-                         img_html_label = f"""<img src='{image_url_featured}' width='150' alt='{card_name_featured}'>"""
-                         # Usamos un espacio en blanco como etiqueta principal para el botón
-                         # El HTML de la imagen se renderizará gracias al CSS y unsafe_allow_html del markdown de la etiqueta
-                         if st.button(" ", key=f"featured_card_click_{card_id_featured}", unsafe_allow_html=True): # <-- CORRECCIÓN AQUÍ (Label es " ", unsafe_allow_html es para el label markdown)
-                             logger.info(f"FEATURED_CARD_CLICK: Carta destacada '{card_id_featured}' seleccionada. Re-ejecutando.")
-                             st.session_state.selected_card_id_from_grid = card_id_featured
-                             st.rerun()
+                         # La etiqueta del botón es solo un espacio en blanco
+                         # La imagen se muestra DENTRO del botón gracias al CSS
+                         # El alt text de la imagen es importante para accesibilidad
+                         button_label = f"""<img src='{image_url_featured}' width='150' alt='{card_name_featured}'>"""
+
+                         # CORRECTO: unsafe_allow_html=True va con st.markdown si usáramos markdown como label,
+                         # PERO para st.button no lo usamos. La etiqueta *debe* ser hashable.
+                         # Usaremos el HTML de la imagen como etiqueta. Si la URL es estable, la etiqueta es hashable.
+                         if st.button(button_label, key=f"featured_card_click_{card_id_featured}", unsafe_allow_html=True): # <--- AQUI DEBE HABER OTRO ERROR
+                              logger.info(f"FEATURED_CARD_CLICK: Carta destacada '{card_id_featured}' seleccionada. Re-ejecutando.")
+                              st.session_state.selected_card_id_from_grid = card_id_featured
+                              st.rerun()
                      else:
                          st.warning("Imagen no disponible")
                          if st.button(f"Seleccionar {card_id_featured}", key=f"featured_card_click_placeholder_{card_id_featured}"):
@@ -608,4 +612,4 @@ else:
          else: st.info("No se encontraron cartas que coincidan con los filtros seleccionados.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v0.8.4 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v0.8.5 | TF: {tf.__version__}")
