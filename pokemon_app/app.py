@@ -15,7 +15,7 @@ import random
 # --- Configuración Inicial ---
 st.set_page_config(layout="wide", page_title="Pokémon TCG Explorer")
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO, # Puedes cambiar a logging.DEBUG para más detalle si depuras
     format='%(asctime)s - %(levelname)s - %(module)s - %(funcName)s - %(lineno)d - %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -297,7 +297,7 @@ def predict_price_with_local_tf_layer(
         if _MODEL_INPUT_TENSOR_KEY_NAME: # Que es 'inputs'
             model_input_feed_dict = {_MODEL_INPUT_TENSOR_KEY_NAME: final_input_tensor_for_model}
             logger.info(f"PREDICT_LOCAL_CALL: Llamando a TFSMLayer con diccionario desempaquetado: Clave='{_MODEL_INPUT_TENSOR_KEY_NAME}'")
-            raw_prediction_output = model_layer(**model_input_feed_dict) # CORRECCIÓN APLICADA
+            raw_prediction_output = model_layer(**model_input_feed_dict)
         else:
             logger.info("PREDICT_LOCAL_CALL: Llamando a TFSMLayer con tensor de entrada directo (no usado con firma 'inputs').")
             raw_prediction_output = model_layer(final_input_tensor_for_model)
@@ -328,7 +328,7 @@ def predict_price_with_local_tf_layer(
         logger.info(f"PREDICT_LOCAL_NUMERIC: Valor numérico extraído: {predicted_value_numeric}")
 
         # --- PASO 5: Postprocesar ---
-        if _TARGET_PREDICTED_IS_LOG_TRANSFORMED: final_predicted_price = np.expm1(predicted_value_numeric) # Usar expm1
+        if _TARGET_PREDICTED_IS_LOG_TRANSFORMED: final_predicted_price = np.expm1(predicted_value_numeric)
         else: final_predicted_price = predicted_value_numeric
         logger.info(f"PREDICT_LOCAL_POSTPROC: Predicción final: {final_predicted_price}")
         return float(final_predicted_price)
@@ -426,8 +426,56 @@ results_df = fetch_card_data_from_bq(
 logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 
 
+# --- Inyectar CSS para botones de imagen ---
+st.markdown("""
+<style>
+/* Estilo para el contenedor de columna que envuelve el botón */
+div[data-testid="stColumn"] {
+    /* Puedes añadir estilos aquí si quieres afectar las columnas, ej: gap */
+}
+/* Estilo para el botón que contiene la imagen */
+div[data-testid="stColumn"] button {
+    display: block !important; /* Hace el botón un bloque para controlar el ancho */
+    margin: auto; /* Centra el botón en la columna */
+    padding: 0 !important; /* Elimina el padding del botón */
+    border: none !important; /* Elimina el borde del botón */
+    background-color: transparent !important; /* Fondo transparente */
+    cursor: pointer !important; /* Muestra cursor de clic */
+    text-align: center !important; /* Centra el contenido */
+}
+/* Estilo para la imagen dentro del botón */
+div[data-testid="stColumn"] button img {
+    display: block; /* Asegura que la imagen no tenga espacio extra abajo */
+    margin: auto; /* Centra la imagen dentro del botón */
+    max-width: 100%; /* Ajusta al ancho de la columna */
+    height: auto; /* Mantiene la proporción */
+}
+/* Efecto hover para la imagen dentro del botón */
+div[data-testid="stColumn"] button:hover img {
+    opacity: 0.8;
+}
+/* Ocultar el texto por defecto del botón si unsafe_allow_html=True */
+/* Esto puede variar según la versión de Streamlit */
+div[data-testid="stColumn"] button > div > p {
+    display: none;
+}
+/* Intento adicional para ocultar el texto */
+div[data-testid="stColumn"] button > div {
+   /* display: flex; /* O grid */
+   /* justify-content: center; */
+   /* align-items: center; */
+   /* flex-direction: column; */
+}
+/* Intento adicional para ocultar el texto */
+div[data-testid="stColumn"] button p {
+   display: none;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
 # --- NUEVA SECCIÓN: Cartas Destacadas ---
-# Determinar si mostrar las cartas destacadas (solo en la carga inicial sin filtros y si hay metadatos)
 is_initial_unfiltered_load = (not selected_sets and not selected_names_to_filter and not selected_rarities and (selected_supertype == "Todos" or not selected_supertype))
 
 if is_initial_unfiltered_load and not all_card_metadata_df.empty:
@@ -440,44 +488,38 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
     if not special_illustration_rares.empty:
         # Seleccionar un número aleatorio de cartas destacadas para mostrar
         num_cards_to_show = min(len(special_illustration_rares), NUM_FEATURED_CARDS_TO_DISPLAY)
-        if len(special_illustration_rares) > 0:
+        if len(special_illustration_rares) > 0 and num_cards_to_show > 0 : # Asegurarse de que haya cartas y queramos mostrar > 0
              sample_indices = random.sample(special_illustration_rares.index.tolist(), num_cards_to_show)
              display_cards_df = special_illustration_rares.loc[sample_indices].reset_index(drop=True)
         else:
-             display_cards_df = pd.DataFrame()
+             display_cards_df = pd.DataFrame() # Asegurar que esté vacío si no hay coincidencias o num_to_show es 0
 
         if not display_cards_df.empty:
-             cols = st.columns(num_cards_to_show) # <-- CORRECCIÓN APLICADA AQUÍ
+             cols = st.columns(num_cards_to_show) # <-- CORRECCIÓN APLICADA AQUÍ (usar num_cards_to_show)
 
              for i, card in display_cards_df.iterrows():
                  with cols[i]:
                      card_id_featured = card.get('id')
-                     card_name_featured = card.get('name', 'N/A')
+                     card_name_featured = card.get('name', 'N/A') # Usar 'name' de metadatos para consistencia
                      image_url_featured = card.get('images_large')
 
                      # Usar st.button con etiqueta HTML de imagen
                      if pd.notna(image_url_featured) and isinstance(image_url_featured, str):
-                         button_html_label = f"""
-                         <style>
-                         div[data-testid="stColumn"] button {{
-                             display: block !important; margin: auto; padding: 0 !important;
-                             border: none !important; background-color: transparent !important;
-                             cursor: pointer !important; text-align: center !important;
-                         }}
-                          div[data-testid="stColumn"] button img {{ display: block; margin: auto; max-width: 100%; height: auto; }}
-                          div[data-testid="stColumn"] button:hover {{ opacity: 0.8; }}
-                         </style>
-                         <img src='{image_url_featured}' width='150' alt='{card_name_featured}'>
-                         """
-                         if st.button(button_html_label, key=f"featured_card_click_{card_id_featured}", unsafe_allow_html=True):
+                         # Etiqueta HTML de la imagen solamente
+                         img_html_label = f"""<img src='{image_url_featured}' width='150' alt='{card_name_featured}'>"""
+
+                         # El primer argumento (label) debe ser hashable. Usamos el HTML string,
+                         # si la imagen URL es única, el string debería ser hashable.
+                         # La clave es siempre única.
+                         if st.button(img_html_label, key=f"featured_card_click_{card_id_featured}", unsafe_allow_html=True):
                              logger.info(f"FEATURED_CARD_CLICK: Carta destacada '{card_id_featured}' seleccionada. Re-ejecutando.")
                              st.session_state.selected_card_id_from_grid = card_id_featured
                              st.rerun()
                      else:
                          # Mostrar un placeholder si la imagen no está disponible
                          st.warning("Imagen no disponible")
-                         # Puedes hacer el texto del nombre o un botón de texto clicable si quieres un fallback
-                         if st.button(card_name_featured, key=f"featured_card_click_placeholder_{card_id_featured}"):
+                         # Opcional: Hacer el nombre/ID clicable si no hay imagen
+                         if st.button(f"Seleccionar {card_id_featured}", key=f"featured_card_click_placeholder_{card_id_featured}"):
                               logger.info(f"FEATURED_CARD_CLICK: Placeholder '{card_id_featured}' seleccionado. Re-ejecutando.")
                               st.session_state.selected_card_id_from_grid = card_id_featured
                               st.rerun()
@@ -600,4 +642,4 @@ else:
          else: st.info("No se encontraron cartas que coincidan con los filtros seleccionados.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v0.8.2 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v0.8.3 | TF: {tf.__version__}")
