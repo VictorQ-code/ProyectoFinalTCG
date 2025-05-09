@@ -1,9 +1,5 @@
 # Memoria del Proyecto: Explorador Interactivo y Predictor de Precios de Cartas Pokémon TCG
 
-**Estudiante:** [Tu Nombre Aquí]
-**Programa:** [Tu Programa de Master Aquí]
-**Fecha:** [Fecha de Exposición/Entrega]
-**Repositorio GitHub:** [Enlace a Tu Repositorio GitHub Aquí]
 
 ---
 
@@ -11,18 +7,38 @@
 
 El mercado de cartas coleccionables de Pokémon TCG ha experimentado un crecimiento significativo en los últimos años, con fluctuaciones de precios influenciadas por diversos factores como la rareza, el set de expansión, el artista y la demanda del mercado. Para coleccionistas y entusiastas, tener acceso a información actualizada y estimaciones de precios futuros es de gran valor.
 
-Este proyecto tiene como objetivo desarrollar una aplicación interactiva que permita explorar una base de datos de cartas Pokémon TCG y, fundamentalmente, ofrecer una predicción estimada del precio futuro de una carta seleccionada utilizando técnicas de **Machine Learning**.
+Este proyecto tiene como objetivo desarrollar una aplicación interactiva que permita explorar una base de datos de cartas Pokémon TCG y, fundamentalmente, ofrecer una predicción estimada del precio futuro de una carta seleccionada utilizando técnicas de **Machine Learning** enfocado a no solo coleccionistas y entusiastas sino a inversores que quieran diversificar su portfolio con otro tipo de inversiones.
 
 La aplicación se concibe como una herramienta accesible y visualmente atractiva, desplegada en la nube para facilitar su uso por parte de la comunidad.
 
 ## 2. Adquisición y Preprocesamiento de Datos
 
-La base de datos fundamental del proyecto reside en **Google BigQuery**, organizada en las siguientes estructuras:
 
-*   **Tablas de Precios Mensuales** (`monthly_YYYY_MM_DD`): Contienen snapshots periódicos del precio de mercado (`cm_averageSellPrice`) para cada carta (`id`), asociados a una fecha específica.
-*   **Tabla de Metadatos** (`card_metadata`): Almacena información estática y semi-estática sobre cada carta, incluyendo su identificador (`id`), nombre (`name`), artista (`artist`), rareza (`rarity`), set de expansión (`set_name`), tipos (`types`), supertipo (`supertype`) y subtipos (`subtypes`), así como URLs de imágenes y plataformas de venta.
+El proyecto requería fundamentalmente dos tipos de datos:
 
-El proceso de adquisición de datos para la aplicación implica:
+1.  **Metadatos de las Cartas:** Información estática o semi-estática como nombre, set de expansión, número dentro del set, rareza, artista, tipo de carta (Pokémon, Entrenador, Energía), tipos elementales asociados, supertipos y subtipos.
+2.  **Datos de Precios:** Historial de precios de mercado, idealmente con granularidad temporal (ej. mensual, semanal) para poder modelar su evolución.
+
+Los **metadatos** se obtuvieron de una fuente fiable: el dataset proporcionado por la página oficial de Pokémon TCG, que ofrece información estructurada sobre las cartas publicadas.
+
+La adquisición de **datos de precios**, particularmente históricos, presentó un desafío significativo. La principal y más completa fuente de datos históricos de precios para Pokémon TCG es la plataforma Cardmarket. Sin embargo, el acceso al historial detallado de precios está tras un muro de pago, imposibilitando la descarga masiva y automatizada para un proyecto de este tipo.
+
+Ante esta restricción, se exploró la posibilidad de obtener los precios mediante web scraping. Se desarrollaron varios bots con diferentes estrategias:
+
+*   **Bot "Walle":** Intentaba localizar las cartas utilizando el número dentro del set y el nombre del set. Esta estrategia falló debido a la complejidad e inconsistencia del algoritmo interno de búsqueda de la página web, que dificultaba la identificación fiable y unívoca de cada carta.
+*   **Bot "Firulai":** Buscaba aprovechar la estructura de los URLs de las cartas. Si bien muchas URLs compartían un patrón, se encontró que en varios sets, la URL de una carta incluía un parámetro numérico aleatorio (entre 1 y 100) asociado al Pokémon. Dada la existencia de más de 19,000 cartas, intentar probar 100 variantes de URL por cada carta se convirtió en un proceso prohibitivamente ineficiente y extremadamente lento.
+*   **Bot "Mapache":** Optó por un enfoque más robusto utilizando los filtros de búsqueda de la propia página y navegando a través de las páginas de resultados. Este bot logró obtener precios *actuales* con alta consistencia, incluso si el proceso era un poco más lento. No obstante, al intentar acceder al historial de precios, la página implementaba medidas anti-bot agresivas: la posición en el código del gráfico de historial cambiaba dinámicamente en cada recarga, y la información de precios estaba incrustada dentro de un elemento `<canvas>`, haciendo imposible extraer los datos numéricamente mediante scraping estándar.
+
+Tras estos intentos fallidos de obtener el historial completo mediante scraping, se encontró una **comunidad que proporcionaba acceso a una API** con datos de precios. Esta API, aunque no ofrecía el historial completo deseado, proporcionaba de manera fiable los precios de los **últimos 30 días**.
+
+Este hallazgo definió la estrategia de adquisición de datos a largo plazo: para construir un historial de precios significativo (necesario para modelos de series temporales), se requeriría la ejecución **manual** de un script propio a principios de cada mes para obtener y almacenar un snapshot mensual de los precios disponibles a través de esta API comunitaria.
+
+La base de datos fundamental del proyecto reside en **Google BigQuery**, organizada en las siguientes estructuras, que almacenan los datos obtenidos (metadatos y los snapshots de precios mensuales acumulados):
+
+*   **Tablas de Precios Mensuales** (`monthly_YYYY_MM_DD`): Contienen los snapshots periódicos del precio de mercado (`cm_averageSellPrice`) para cada carta (`id`), asociados a una fecha específica.
+*   **Tabla de Metadatos** (`card_metadata`): Almacena la información descriptiva sobre cada carta (`id`, `name`, `artist`, `rarity`, `set_name`, `types`, `supertype`, `subtypes`, etc.).
+
+El proceso de adquisición de datos *para la aplicación en tiempo real* implica:
 
 *   Conexión segura a `BigQuery` utilizando el cliente Python oficial y autenticación vía Service Account gestionada a través de `Streamlit Secrets`.
 *   Consulta dinámica a la tabla de precios más reciente (`monthly_*` con sufijo más reciente) para obtener los precios actuales de las cartas.
@@ -31,9 +47,8 @@ El proceso de adquisición de datos para la aplicación implica:
 
 El preprocesamiento de datos para el **modelo de Machine Learning** (realizado offline en un entorno como Google Colab durante la fase de entrenamiento) incluyó:
 
-*   **Feature Engineering:** Creación de características temporales y de precio relevantes, como el logaritmo del precio en el tiempo actual (`price_t0_log = log(1 + price_t0)`) y la diferencia en días entre snapshots (`days_diff`). Para el modelo `MLP` implementado, `days_diff` fue un valor constante determinado por la diferencia entre los dos snapshots usados para su entrenamiento específico. Para el modelo `LSTM` (ver Trabajo Futuro), se diseñó el uso de secuencias de precios y diferencias de días variables (`days_since_prev`).
+*   **Feature Engineering:** Creación de características temporales y de precio relevantes, como el logaritmo del precio en el tiempo actual (`price_t0_log = log(1 + price_t0)`) y la diferencia en días entre snapshots (`days_diff`). Para el modelo `MLP` implementado, `days_diff` fue un valor constante (29.0) determinado por la diferencia entre los dos snapshots usados para su entrenamiento específico. Para el modelo `LSTM` (ver Trabajo Futuro), se diseñó el uso de secuencias de precios y diferencias de días variables (`days_since_prev`).
 *   **Transformaciones:** Aplicación de `StandardScaler` a las características numéricas (`price_t0_log`, `days_diff`) y `OneHotEncoder` a las características categóricas (`artist_name`, `pokemon_name`, `rarity`, `set_name`, `types`, `supertype`, `subtypes`). Es crucial que el `OneHotEncoder` se entrenara (método `.fit()`) con los valores exactos (y su representación, ej. si `types`/`subtypes` eran listas o strings) tal como vienen de la base de datos para poder replicar la transformación (`.transform()`) fielmente en la inferencia.
-
 ## 3. Desarrollo del Modelo de Machine Learning (MLP)
 
 Durante la fase de desarrollo, se exploraron dos pipelines de modelado:
