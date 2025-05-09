@@ -93,7 +93,8 @@ El mercado de cartas coleccionables de **Pokémon TCG** ha crecido mucho recient
 - **Feature Engineering**  
   - `price_t0_log = log(1 + price_t0)`  
   - `days_diff` (constante = 29.0)  
-- **Transformaciones**  
+- **Transformaciones**
+  - `days_diff` (variable, más peso conforme mas distancia entre días) 
   - `StandardScaler` → numéricas  
   - `OneHotEncoder` → categóricas  
   - Se entrena con `.fit()`, luego `.transform()` en inferencia
