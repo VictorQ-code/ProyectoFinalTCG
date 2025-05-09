@@ -67,7 +67,7 @@ El mercado de cartas coleccionables de **Pokémon TCG** ha crecido mucho recient
 
   - **Walle**: buscaba por número y set → muy inconsistente  
   - **Firulai**: probaba 100 variantes de URL → demasiado lento  
-  - **Mapache**: navegaba resultados y filtros → solo precios actuales, no histórico
+  - **Mapache**: navegaba resultados y filtros → un poco lento, pero no puede sacar precios por canva
 
 ### API comunitaria
 
