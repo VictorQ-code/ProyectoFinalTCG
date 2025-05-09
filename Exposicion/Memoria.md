@@ -129,7 +129,19 @@ Mediante la conexión de Power BI a BigQuery, se ha creado un **dashboard de an�
 
 Mientras que la aplicación Streamlit es una herramienta de consulta y predicción a demanda, el dashboard de Power BI actúa como una herramienta de análisis estratégico, permitiendo explorar patrones y tendencias a un nivel más granular y agregado, complementando así la funcionalidad del proyecto.
 
+## 6. Trabajo Futuro
 
+Este proyecto sienta las bases para futuras mejoras y expansiones significativas:
+
+*   **Continuación y Expansión de la Adquisición Histórica:** Mantener y optimizar la ejecución mensual del script de adquisición de precios para construir gradualmente un historial de datos más profundo y de mayor granularidad en BigQuery. Este historial es crucial para entrenar y validar modelos de series temporales más robustos y mejorar la precisión general.
+*   **Automatización Completa del Flujo de Datos:** Desarrollar mecanismos para automatizar por completo el pipeline de datos, desde la obtención de los snapshots mensuales de la API (eliminando la necesidad de ejecución manual) hasta la ingesta automática en BigQuery y la actualización periódica o a demanda de los datos disponibles para la aplicación Streamlit.
+*   **Integración y Uso del Modelo LSTM:** Adaptar la aplicación Streamlit para cargar y utilizar el modelo `LSTM` (mencionado conceptualmente en la sección 3) a medida que se acumule suficiente historial de precios (`n_dates > 2`). Esto implicaría modificar la lógica de predicción para construir secuencias de entrada adecuadas para el `LSTM` y considerar la posibilidad de utilizar dinámicamente el modelo más apropiado según los datos históricos disponibles para una carta.
+*   **Selección Dinámica del Horizonte de Predicción:** Si se implementa el `LSTM` o se reentrena un `MLP` con `days_diff` variable utilizando más histórico, permitir al usuario seleccionar interactivamente el número de días hacia el futuro para el cual desea la predicción, ofreciendo mayor flexibilidad y personalización.
+*   **Visualizaciones Gráficas Avanzadas y de Predicción:** Integrar en la sección de detalle de la carta (dentro de la aplicación Streamlit) gráficos interactivos que muestren la evolución histórica del precio de la carta (utilizando los datos acumulados en BigQuery) y superpongan la predicción del modelo, ya sea como un punto futuro, una línea de pronóstico o un intervalo de confianza, facilitando la comprensión visual del potencial de la carta.
+*   **Implementación de un Chatbot Asistente:** Explorar la integración de un chatbot dentro de la aplicación que pueda responder preguntas comunes sobre cartas, sets, rarezas, tendencias generales del mercado, y ofrecer consejos básicos basados en los datos disponibles y las predicciones del modelo (por ejemplo, "¿Esta carta es una buena inversión a corto plazo según la predicción?").
+*   **Mejora Continua del Pipeline de Preprocesamiento:** Refinar el tratamiento de datos faltantes, valores inconsistentes (especialmente en campos como `types` y `subtypes`), y explorar técnicas de ingeniería de características más avanzadas a medida que se disponga de más datos y se desarrollen modelos más complejos.
+*   **Escalabilidad y Optimización del Despliegue:** Evaluar la necesidad de migrar componentes del sistema (como la carga de modelos) a soluciones más robustas y escalables (ej. TensorFlow Serving, Vertex AI Endpoints) si la carga de usuarios o el tamaño de los modelos aumentan, optimizando el rendimiento y la latencia.
+*   **Exploración de Factores de Precio Adicionales:** Investigar la posibilidad de incorporar otras fuentes de datos o características que podrían influir en el precio, como la popularidad online del Pokémon, su relevancia en el juego competitivo (TCG), anuncios oficiales, eventos comunitarios, etc.
 ---
 
 
