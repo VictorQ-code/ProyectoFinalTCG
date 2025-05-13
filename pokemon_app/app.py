@@ -44,16 +44,17 @@ MAX_ROWS_NO_FILTER = 200
 
 # --- RUTAS Y NOMBRES DE ARCHIVOS DE MODELOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_FILES_DIR = os.path.join(BASE_DIR, "model_files") # Carpeta única para todos los modelos
+MODEL_FILES_DIR = os.path.join(BASE_DIR, "model_files")
 
-# MLP (Predicción Futura) - Asumiendo que están en model_files/mlp_v1/
-MLP_SAVED_MODEL_PATH = os.path.join(MODEL_FILES_DIR, "mlp_v1")
+# MLP (Predicción Futura) - Verifica que esta sea tu estructura real
+MLP_ARTIFACTS_SUBDIR = "mlp_v1" # Subcarpeta donde están los artefactos del MLP
+MLP_SAVED_MODEL_PATH = os.path.join(MODEL_FILES_DIR, MLP_ARTIFACTS_SUBDIR)
 MLP_OHE_PKL_FILENAME = "ohe_mlp_cat.pkl"
 MLP_SCALER_PKL_FILENAME = "scaler_mlp_num.pkl"
-MLP_OHE_PATH = os.path.join(MODEL_FILES_DIR, "mlp_v1", MLP_OHE_PKL_FILENAME)
-MLP_SCALER_PATH = os.path.join(MODEL_FILES_DIR, "mlp_v1", MLP_SCALER_PKL_FILENAME)
+MLP_OHE_PATH = os.path.join(MLP_SAVED_MODEL_PATH, MLP_OHE_PKL_FILENAME)
+MLP_SCALER_PATH = os.path.join(MLP_SAVED_MODEL_PATH, MLP_SCALER_PKL_FILENAME)
 
-# LightGBM Pipelines (Precio Justo) - Asumiendo que están en model_files/ y subcarpetas High/Low
+# LightGBM Pipelines (Precio Justo)
 LGBM_HIGH_PKL_PATH = os.path.join(MODEL_FILES_DIR, "High/modelo_pipe_high.pkl")
 LGBM_LOW_PKL_PATH = os.path.join(MODEL_FILES_DIR, "Low/modelo_pipe_low.pkl")
 LGBM_THRESHOLD_JSON_PATH = os.path.join(MODEL_FILES_DIR, "threshold.json")
@@ -71,11 +72,17 @@ _MLP_DAYS_DIFF = 29.0
 _LGBM_NUM_FEATURES_INPUT = ['cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
 _LGBM_CAT_FEATURES_INPUT = ['rarity', 'supertype', 'subtypes', 'types', 'set_name']
 _LGBM_ALL_INPUT_COLS = _LGBM_NUM_FEATURES_INPUT + _LGBM_CAT_FEATURES_INPUT
-_LGBM_TARGET_LOG = True # Asumiendo que ambos pipelines LGBM predicen log
+_LGBM_TARGET_LOG = True
 
 # --- CONFIGURACIÓN PARA CARTAS DESTACADAS ---
 FEATURED_RARITY = 'Special Illustration Rare'
 NUM_FEATURED_CARDS_TO_DISPLAY = 5
+
+# --- INICIALIZAR SESSION STATE TEMPRANO ---
+if 'selected_card_id_from_grid' not in st.session_state:
+    st.session_state.selected_card_id_from_grid = None
+    logger.info("SESSION_STATE_INIT: 'selected_card_id_from_grid' inicializado a None (temprano).")
+
 
 # --- Conexión Segura a BigQuery ---
 @st.cache_resource
@@ -112,7 +119,7 @@ def load_tf_model_as_layer(model_path): # Para el MLP SavedModel
     saved_model_pb_path = os.path.join(model_path, "saved_model.pb")
     if not os.path.exists(saved_model_pb_path):
         logger.error(f"LOAD_TF_LAYER: 'saved_model.pb' no encontrado en la ruta del modelo: {model_path}")
-        st.error(f"Error Crítico: El archivo 'saved_model.pb' no se encuentra en '{model_path}'. ")
+        st.error(f"Error Crítico: El archivo 'saved_model.pb' no se encuentra en '{model_path}'. Verifica la constante MLP_SAVED_MODEL_PATH y tu estructura de archivos en GitHub.")
         return None
     try:
         logger.info(f"LOAD_TF_LAYER: Intentando cargar SavedModel como TFSMLayer desde: {model_path}")
@@ -144,7 +151,7 @@ def load_sklearn_pipeline(file_path, pipeline_name="Sklearn Pipeline"): # Para l
 def load_joblib_preprocessor(file_path, preprocessor_name="Preprocessor"): # Para OHE y Scaler del MLP
     if not os.path.exists(file_path):
         logger.error(f"LOAD_PREPROC: Archivo '{preprocessor_name}' no encontrado en: {file_path}")
-        st.error(f"Error Crítico: El archivo preprocesador '{preprocessor_name}' no se encuentra en '{file_path}'.")
+        st.error(f"Error Crítico: El archivo preprocesador '{preprocessor_name}' no se encuentra en '{file_path}'. Verifica las constantes de ruta del MLP.")
         return None
     try:
         preprocessor = joblib.load(file_path)
@@ -216,15 +223,13 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
 
 @st.cache_data(ttl=3600)
 def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
-    # Query para metadatos (asegurando types y subtypes)
     query = f"""
     SELECT
-        id, name, name as pokemon_name, -- Añadir pokemon_name para consistencia si es necesario
+        id, name, name as pokemon_name, -- Añadir pokemon_name para consistencia con MLP
         supertype, subtypes, types,
         rarity, set_id, set_name,
-        artist, artist as artist_name, -- Añadir artist_name para consistencia
+        artist, artist as artist_name, -- Añadir artist_name para consistencia con MLP
         images_large, cardmarket_url, tcgplayer_url
-        -- Columnas necesarias para LGBM (cm_avg1, etc.) NO ESTÁN AQUÍ. Se obtienen de la tabla de precios.
     FROM `{CARD_METADATA_TABLE}`
     """
     logger.info(f"METADATA_BQ: Ejecutando query para metadatos: {query[:100]}...")
@@ -248,7 +253,6 @@ def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
         else: logger.error(f"METADATA_BQ: Error al cargar metadatos de BigQuery: {e}", exc_info=True); st.error(f"Error al cargar metadatos de cartas: {e}.")
         return pd.DataFrame()
 
-# --- MOVER DEFINICIÓN DE fetch_card_data_from_bq AQUÍ ---
 @st.cache_data(ttl=600)
 def fetch_card_data_from_bq(
     _client: bigquery.Client, latest_table_path: str, supertype_ui_filter: str | None,
@@ -258,17 +262,18 @@ def fetch_card_data_from_bq(
     logger.info(f"FETCH_BQ_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
     if not latest_table_path: logger.error("FETCH_BQ_DATA_FAIL: 'latest_table_path' es None."); st.error("Error Interno: No se pudo determinar la tabla de precios."); return pd.DataFrame()
     ids_to_query_df = full_metadata_df_param.copy()
+    # Aplicar filtros de sidebar a los metadatos para obtener la lista de IDs a consultar
     if supertype_ui_filter and supertype_ui_filter != "Todos": ids_to_query_df = ids_to_query_df[ids_to_query_df['supertype'] == supertype_ui_filter]
     if sets_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['set_name'].isin(sets_ui_filter)]
     if rarities_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['rarity'].isin(rarities_ui_filter)]
     if names_ui_filter:
         actual_name_col_to_filter_on = 'base_pokemon_name' if supertype_ui_filter == 'Pokémon' else 'name'
         if actual_name_col_to_filter_on in ids_to_query_df.columns: ids_to_query_df = ids_to_query_df[ids_to_query_df[actual_name_col_to_filter_on].isin(names_ui_filter)]
-    if ids_to_query_df.empty: logger.info("FETCH_BQ_DATA: No hay IDs que coincidan."); return pd.DataFrame()
+    if ids_to_query_df.empty: logger.info("FETCH_BQ_DATA: No hay IDs que coincidan con filtros de metadatos."); return pd.DataFrame()
     list_of_card_ids_to_query = ids_to_query_df['id'].unique().tolist()
-    if not list_of_card_ids_to_query: logger.info("FETCH_BQ_DATA: Lista IDs vacía."); return pd.DataFrame()
+    if not list_of_card_ids_to_query: logger.info("FETCH_BQ_DATA: Lista IDs vacía después de filtrar metadatos."); return pd.DataFrame()
 
-    # Query actualizada para incluir TODAS las columnas necesarias para AMBOS modelos
+    # Query para obtener datos de la tabla de precios y unir con metadatos seleccionados
     query_sql_template = f"""
     SELECT
         meta.id, meta.name, meta.name AS pokemon_name, meta.supertype,
@@ -276,8 +281,8 @@ def fetch_card_data_from_bq(
         meta.set_name, meta.rarity, meta.artist, meta.artist as artist_name,
         meta.images_large AS image_url,
         meta.cardmarket_url, meta.tcgplayer_url,
-        prices.cm_averageSellPrice AS price, -- Para MLP y LGBM
-        prices.cm_avg1, prices.cm_avg7, prices.cm_avg30, prices.cm_trendPrice -- Para LGBM
+        prices.cm_averageSellPrice AS price,
+        prices.cm_avg1, prices.cm_avg7, prices.cm_avg30, prices.cm_trendPrice
     FROM `{CARD_METADATA_TABLE}` AS meta
     JOIN `{latest_table_path}` AS prices ON meta.id = prices.id
     WHERE meta.id IN UNNEST(@card_ids_param)
@@ -288,12 +293,11 @@ def fetch_card_data_from_bq(
     logger.info(f"FETCH_BQ_DATA: SQL BQ para {len(list_of_card_ids_to_query)} IDs. Orden: {sort_direction}")
     try:
         results_from_bq_df = _client.query(query_sql_template, job_config=job_config_bq).to_dataframe()
-        # Convertir columnas de precio a numérico, manejando errores
         price_cols_to_convert = ['price', 'cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
         for p_col in price_cols_to_convert:
             if p_col in results_from_bq_df.columns:
                 results_from_bq_df[p_col] = pd.to_numeric(results_from_bq_df[p_col], errors='coerce')
-        logger.info(f"FETCH_BQ_DATA: Consulta a BQ OK. Filas: {len(results_from_bq_df)}.")
+        logger.info(f"FETCH_BQ_DATA: Consulta a BQ OK. Filas devueltas: {len(results_from_bq_df)}.")
         return results_from_bq_df
     except Exception as e:
         if "db-dtypes" in str(e).lower(): logger.error("FETCH_BQ_DATA_FAIL: Error de 'db-dtypes'.", exc_info=True); st.error("Error de Dependencia: Falta 'db-dtypes'.")
@@ -307,9 +311,6 @@ def predict_price_with_local_tf_layer(
     model_layer: tf.keras.layers.TFSMLayer, ohe_mlp: typing.Any, scaler_mlp: typing.Any,
     card_data_series: pd.Series
 ) -> float | None:
-    # ... (Pega aquí la función predict_price_with_local_tf_layer COMPLETA que ya funcionaba)
-    # Asegúrate que use _MLP_NUM_COLS, _MLP_CAT_COLS, _MLP_INPUT_KEY, _MLP_OUTPUT_KEY, _MLP_TARGET_LOG, _MLP_DAYS_DIFF
-    # ... y los preprocesadores mlp_ohe, mlp_scaler
     logger.info(f"PREDICT_MLP: Iniciando para ID: {card_data_series.get('id', 'N/A')}")
     if not model_layer or not ohe_mlp or not scaler_mlp: return None
     try:
@@ -317,8 +318,8 @@ def predict_price_with_local_tf_layer(
         price_val = card_data_series.get('price')
         data_dict['price_t0_log'] = np.log1p(price_val) if pd.notna(price_val) and price_val > 0 else np.log1p(0)
         data_dict['days_diff'] = float(_MLP_DAYS_DIFF)
-        for col in _MLP_CAT_COLS: # Usa las columnas definidas para MLP
-            val = card_data_series.get(col) # Asume que card_data_series tiene estas columnas (ej. 'artist_name')
+        for col in _MLP_CAT_COLS:
+            val = card_data_series.get(col)
             if col == 'types':
                 if isinstance(val, list) and val: data_dict[col] = str(val[0]) if pd.notna(val[0]) else 'Unknown_Type'
                 elif pd.notna(val): data_dict[col] = str(val)
@@ -327,16 +328,19 @@ def predict_price_with_local_tf_layer(
                 if isinstance(val, list) and val: cleaned = [str(s) for s in val if pd.notna(s)]; data_dict[col] = ', '.join(sorted(list(set(cleaned)))) if cleaned else 'None'
                 elif pd.notna(val): data_dict[col] = str(val)
                 else: data_dict[col] = 'None'
-            else: data_dict[col] = str(val) if pd.notna(val) else f'Unknown_{col}' # Genérico para otras
+            else: data_dict[col] = str(val) if pd.notna(val) else f'Unknown_{col}'
 
         df_prep = pd.DataFrame([data_dict])
-        df_prep = df_prep[_MLP_NUM_COLS + _MLP_CAT_COLS] # Ordenar
+        df_prep = df_prep[_MLP_NUM_COLS + _MLP_CAT_COLS]
 
         num_feat = scaler_mlp.transform(df_prep[_MLP_NUM_COLS].fillna(0))
         cat_feat = mlp_ohe.transform(df_prep[_MLP_CAT_COLS].astype(str))
         X_final = np.concatenate([num_feat, cat_feat], axis=1)
 
-        if X_final.shape[1] != 4865: logger.error(f"MLP SHAPE MISMATCH! Expected 4865, got {X_final.shape[1]}"); return None
+        EXPECTED_MLP_FEATURES = 4865 # Actualizar si es diferente
+        if X_final.shape[1] != EXPECTED_MLP_FEATURES:
+            logger.error(f"MLP SHAPE MISMATCH! Expected {EXPECTED_MLP_FEATURES}, got {X_final.shape[1]}")
+            return None
         
         pred_raw = model_layer(**{_MLP_INPUT_KEY: tf.convert_to_tensor(X_final, dtype=tf.float32)})
         pred_tensor = pred_raw[_MLP_OUTPUT_KEY]
@@ -344,16 +348,18 @@ def predict_price_with_local_tf_layer(
         return np.expm1(pred_numeric) if _MLP_TARGET_LOG else pred_numeric
     except Exception as e: logger.error(f"PREDICT_MLP_EXC: {e}", exc_info=True); return None
 
-
-# LGBM
+# LightGBM
 def predict_price_with_lgbm_pipelines_app(
     input_df_row: pd.DataFrame, config: dict, pipe_high, pipe_low
 ) -> typing.Tuple[typing.Optional[float], str]:
-    # ... (Pega aquí la función get_prediction_with_lgbm_pipelines de Colab,
-    #      asegurándote que use _LGBM_ALL_INPUT_COLS y _LGBM_TARGET_LOG)
     chosen_pipeline_name = "None"; final_prediction = None
     try: X_new_predict = input_df_row[_LGBM_ALL_INPUT_COLS]
     except KeyError as e: logger.error(f"LGBM_PRED_FAIL: Faltan cols en input: {e}"); return None, "Error_Input_Cols"
+    
+    # Asegurarse que las columnas numéricas sean numéricas para la decisión y predicción
+    for num_col in _LGBM_NUM_FEATURES_INPUT:
+        X_new_predict[num_col] = pd.to_numeric(X_new_predict[num_col], errors='coerce').fillna(0) # Imputar NaNs con 0
+        
     cm_avg7_val = X_new_predict['cm_avg7'].iloc[0]
     threshold = config.get('threshold', 30.0)
     active_pipe = None
@@ -365,116 +371,228 @@ def predict_price_with_lgbm_pipelines_app(
         elif pipe_high: active_pipe = pipe_high; chosen_pipeline_name = "LGBM High (Fallback L)"
     if active_pipe:
         try:
+            logger.debug(f"LGBM PRED INPUT DF for {chosen_pipeline_name}:\n{X_new_predict.to_string(index=False)}")
+            # Asegurar que las columnas categóricas sean strings antes de OHE dentro del pipeline
+            for cat_col in _LGBM_CAT_FEATURES_INPUT:
+                 X_new_predict[cat_col] = X_new_predict[cat_col].astype(str).fillna('Missing_Value')
+
             pred_log = active_pipe.predict(X_new_predict)
             pred_numeric = pred_log[0]
             final_prediction = np.expm1(pred_numeric) if _LGBM_TARGET_LOG else pred_numeric
         except Exception as e_pipe: logger.error(f"LGBM_PRED_PIPE_EXC: {e_pipe}", exc_info=True); final_prediction = None
-    else: logger.error("LGBM_PRED_FAIL: Ningún pipeline activo.")
+    else: logger.error("LGBM_PRED_FAIL: Ningún pipeline LGBM seleccionado o cargado.")
     return final_prediction, chosen_pipeline_name
 
 
 # --- Carga de Datos Inicial de BigQuery ---
-# ... (sin cambios: logger.info, LATEST_SNAPSHOT_TABLE, all_card_metadata_df) ...
+logger.info("APP_INIT: Cargando datos iniciales de BigQuery.")
+LATEST_SNAPSHOT_TABLE = get_latest_snapshot_table(bq_client)
+all_card_metadata_df = get_card_metadata_with_base_names(bq_client) # Contiene types y subtypes
+
+if not LATEST_SNAPSHOT_TABLE or all_card_metadata_df.empty:
+    logger.critical("APP_INIT_FAIL: Datos esenciales de BigQuery no cargados.")
+    st.error("Error Crítico: No se pudieron cargar los datos esenciales de BigQuery. La aplicación se detendrá.")
+    st.stop()
+logger.info("APP_INIT: Datos iniciales de BigQuery cargados OK.")
+
+
+# --- Sidebar y Filtros ---
+st.sidebar.header("Filtros y Opciones")
+options_df_for_filters = all_card_metadata_df.copy()
+supertype_options_list = sorted(options_df_for_filters['supertype'].dropna().unique().tolist())
+select_supertype_options = ["Todos"] + supertype_options_list if supertype_options_list else ["Todos"]
+selected_supertype = st.sidebar.selectbox("Categoría:", select_supertype_options, index=0, key="sb_supertype_filter_v3")
+if selected_supertype != "Todos": options_df_for_filters = options_df_for_filters[options_df_for_filters['supertype'] == selected_supertype]
+set_options_list = sorted(options_df_for_filters['set_name'].dropna().unique().tolist())
+selected_sets = st.sidebar.multiselect("Set(s):", set_options_list, key="ms_sets_filter_v3")
+if selected_sets: options_df_for_filters = options_df_for_filters[options_df_for_filters['set_name'].isin(selected_sets)]
+name_label = "Nombre de Carta:"; name_col_for_options = 'name'
+if selected_supertype == 'Pokémon': name_col_for_options = 'base_pokemon_name'; name_label = "Pokémon (Nombre Base):"
+elif selected_supertype != "Todos": name_label = f"Nombre ({selected_supertype}):"
+if name_col_for_options in options_df_for_filters.columns: name_options_list = sorted(options_df_for_filters[name_col_for_options].dropna().unique().tolist())
+else: name_options_list = []; logger.warning(f"SIDEBAR: Columna '{name_col_for_options}' no encontrada para filtro de nombre.")
+selected_names_to_filter = st.sidebar.multiselect(name_label, name_options_list, key="ms_names_filter_v3")
+if selected_names_to_filter and name_col_for_options in options_df_for_filters.columns: options_df_for_filters = options_df_for_filters[options_df_for_filters[name_col_for_options].isin(selected_names_to_filter)]
+rarity_options_list = sorted(options_df_for_filters['rarity'].dropna().unique().tolist())
+selected_rarities = st.sidebar.multiselect("Rareza(s):", rarity_options_list, key="ms_rarities_filter_v3")
+sort_order = st.sidebar.radio("Ordenar por Precio (Trend):", ("Ascendente", "Descendente"), index=1, key="rd_sort_order_v3")
+sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 
 # --- Carga de results_df (después de filtros sidebar) ---
-# ... (sin cambios: logger.info, results_df = fetch_card_data_from_bq(...)) ...
+logger.info("MAIN_APP: Fetcheando resultados principales de BigQuery (basado en filtros de sidebar).")
+results_df = fetch_card_data_from_bq(
+    bq_client, LATEST_SNAPSHOT_TABLE, selected_supertype, selected_sets,
+    selected_names_to_filter, selected_rarities, sort_sql, all_card_metadata_df
+)
+logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas (reflejando filtros).")
 
-# --- Lógica de Selección Inicial / Fallback ---
-# ... (sin cambios) ...
 
-# --- Determinar si es carga inicial ---
-# ... (is_initial_unfiltered_load sin cambios) ...
+# --- Inicializar session_state key para la carta seleccionada ---
+# Esta inicialización ahora está antes de la lógica de fallback
+logger.info(f"SESSION_STATE (pre-init check): ID en session_state: {st.session_state.get('selected_card_id_from_grid')}")
+if 'selected_card_id_from_grid' not in st.session_state:
+    st.session_state.selected_card_id_from_grid = None
+    logger.info("SESSION_STATE_INIT: 'selected_card_id_from_grid' inicializado a None.")
+logger.info(f"SESSION_STATE (post-init check): ID en session_state: {st.session_state.get('selected_card_id_from_grid')}")
+
+
+# --- Lógica para establecer la carta seleccionada al inicio si no hay nada ---
+if st.session_state.selected_card_id_from_grid is None and not results_df.empty:
+    cards_with_price = results_df[pd.notna(results_df['price'])]
+    if not cards_with_price.empty:
+        random_card_row = cards_with_price.sample(1).iloc[0]
+        random_card_id = random_card_row.get('id')
+        if random_card_id and pd.notna(random_card_id):
+            st.session_state.selected_card_id_from_grid = random_card_id
+            logger.info(f"FALLBACK_SELECT: Seleccionando carta aleatoria con precio como fallback: '{random_card_id}'.")
+    else:
+        logger.warning("FALLBACK_SELECT: No se encontraron cartas con precio en los resultados filtrados para seleccionar un fallback.")
+logger.info(f"SESSION_STATE (post-fallback): ID en session_state: {st.session_state.get('selected_card_id_from_grid')}")
+
+
+# --- Determinar si estamos en la carga inicial sin filtros ---
+is_initial_unfiltered_load = (not selected_sets and not selected_names_to_filter and not selected_rarities and (selected_supertype == "Todos" or not selected_supertype))
 
 
 # --- SECCIÓN PRINCIPAL DE CONTENIDO ---
 st.title("Explorador de Cartas Pokémon TCG")
 
 # --- Mostrar Cartas Destacadas O Tabla de Resultados ---
-# ... (Lógica de if is_initial_unfiltered_load ... elif not is_initial_unfiltered_load ... sin cambios) ...
-# ... (Incluyendo la sección de AgGrid y su manejo de clics)
+if is_initial_unfiltered_load and not all_card_metadata_df.empty:
+    st.header("Cartas Destacadas")
+    special_illustration_rares = all_card_metadata_df[all_card_metadata_df['rarity'] == FEATURED_RARITY].copy()
+    if not special_illustration_rares.empty:
+        num_cards_to_show = min(len(special_illustration_rares), NUM_FEATURED_CARDS_TO_DISPLAY)
+        if len(special_illustration_rares) > 0 and num_cards_to_show > 0 :
+             sample_indices = random.sample(special_illustration_rares.index.tolist(), num_cards_to_show)
+             display_cards_df = special_illustration_rares.loc[sample_indices].reset_index(drop=True)
+        else: display_cards_df = pd.DataFrame()
+        if not display_cards_df.empty:
+             cols = st.columns(num_cards_to_show)
+             for i, card in display_cards_df.iterrows():
+                 with cols[i]:
+                     card_name_featured = card.get('name', 'N/A'); card_set_featured = card.get('set_name', 'N/A')
+                     image_url_featured = card.get('images_large')
+                     if pd.notna(image_url_featured): st.image(image_url_featured, width=150, caption=card_set_featured)
+                     else: st.warning("Imagen no disponible"); st.caption(f"{card_name_featured} ({card_set_featured})")
+             st.markdown("---")
+        elif special_illustration_rares.empty: logger.info(f"FEATURED_CARDS: No hay cartas '{FEATURED_RARITY}'.")
+    if special_illustration_rares.empty and results_df.empty and is_initial_unfiltered_load and bq_client and LATEST_SNAPSHOT_TABLE:
+         st.info("No se encontraron cartas con la rareza destacada o con precio en la base de datos actual.")
+
+elif not is_initial_unfiltered_load: # Tabla visible solo al aplicar filtros
+    st.header("Resultados de Cartas")
+    logger.info(f"AGGRID_RENDERING: ID en session_state ANTES de AgGrid: {st.session_state.get('selected_card_id_from_grid')}")
+    results_df_for_aggrid_display = results_df
+    if len(results_df) > MAX_ROWS_NO_FILTER:
+        st.info(f"Mostrando los primeros {MAX_ROWS_NO_FILTER} de {len(results_df)} resultados. Aplica filtros.")
+        results_df_for_aggrid_display = results_df.head(MAX_ROWS_NO_FILTER)
+    grid_response = None
+    if not results_df_for_aggrid_display.empty:
+        display_columns_mapping = {'id': 'ID', 'pokemon_name': 'Nombre Carta', 'supertype': 'Categoría', 'set_name': 'Set', 'rarity': 'Rareza', 'artist': 'Artista', 'price': 'Precio (Trend €)'}
+        cols_in_df_for_display = [col for col in display_columns_mapping.keys() if col in results_df_for_aggrid_display.columns]
+        final_display_df_aggrid = results_df_for_aggrid_display[cols_in_df_for_display].copy()
+        final_display_df_aggrid.rename(columns=display_columns_mapping, inplace=True)
+        price_col_aggrid = display_columns_mapping.get('price')
+        if price_col_aggrid and price_col_aggrid in final_display_df_aggrid.columns:
+             final_display_df_aggrid[price_col_aggrid] = final_display_df_aggrid[price_col_aggrid].apply(lambda x: f"€{x:.2f}" if pd.notna(x) else "N/A")
+        gb = GridOptionsBuilder.from_dataframe(final_display_df_aggrid)
+        gb.configure_selection(selection_mode='single', use_checkbox=False); gb.configure_grid_options(domLayout='normal')
+        gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25)
+        gridOptions = gb.build()
+        st.write("Haz clic en una fila de la tabla para ver sus detalles y opciones de predicción:")
+        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_vFINAL')
+    else: logger.info("AGGRID_RENDERING: No hay datos para mostrar en AgGrid.")
+    if grid_response:
+        newly_selected_id = None; selected_rows = grid_response.get('selected_rows')
+        if isinstance(selected_rows, pd.DataFrame) and not selected_rows.empty:
+            try:
+                if 'ID' in selected_rows.iloc[0]: newly_selected_id = selected_rows.iloc[0]['ID']
+            except Exception as e: logger.error(f"AGGRID_HANDLER_DF_ERR: {e}", exc_info=True); newly_selected_id = None
+        elif isinstance(selected_rows, list) and selected_rows:
+            try:
+                if isinstance(selected_rows[0], dict): newly_selected_id = selected_rows[0].get('ID')
+            except Exception as e: logger.error(f"AGGRID_HANDLER_LIST_ERR: {e}", exc_info=True); newly_selected_id = None
+        current_id = st.session_state.get('selected_card_id_from_grid')
+        if newly_selected_id is not None and newly_selected_id != current_id:
+            logger.info(f"AGGRID_SELECT_CHANGE: De '{current_id}' a '{newly_selected_id}'. Rerunning.")
+            st.session_state.selected_card_id_from_grid = newly_selected_id
+            st.rerun()
 
 # --- Sección de Detalle de Carta Seleccionada y Predicción ---
 if st.session_state.selected_card_id_from_grid is not None:
     st.divider(); st.header("Detalle de Carta Seleccionada")
-    # ... (Lógica para obtener card_to_display_in_detail_section sin cambios) ...
+    card_to_display_in_detail_section = None
+    id_for_detail_view_from_session = st.session_state.get('selected_card_id_from_grid')
+    source_df = results_df if (not results_df.empty and id_for_detail_view_from_session in results_df['id'].values) else all_card_metadata_df
+    if not source_df.empty:
+        matched_rows = source_df[source_df['id'] == id_for_detail_view_from_session]
+        if not matched_rows.empty: card_to_display_in_detail_section = matched_rows.iloc[0]
+        else: logger.warning(f"DETAIL_NOT_FOUND: ID '{id_for_detail_view_from_session}' no en fuente. Resetting."); st.session_state.selected_card_id_from_grid = None; st.rerun()
+    else: logger.warning(f"DETAIL_NO_DATA: Fuente de detalles vacía para ID '{id_for_detail_view_from_session}'."); st.error("Error: Datos no cargados para detalles.")
 
     if card_to_display_in_detail_section is not None:
-        # ... (Lógica para extraer card_id_render, card_name_render, etc. sin cambios) ...
-        # ... (Columnas col_img y su contenido sin cambios) ...
-
-        with col_info: # Reemplazar esta sección en tu código existente
-            # ... (mostrar ID, Categoría, Set, Rareza, Artista, Precio Actual sin cambios) ...
-            st.subheader("Estimaciones de Precio")
-
-            # Botón para MLP (Predicción Futura)
+        card_id_render = card_to_display_in_detail_section.get('id', "N/A")
+        card_name_render = card_to_display_in_detail_section.get('pokemon_name', card_to_display_in_detail_section.get('name', "N/A"))
+        card_set_render = card_to_display_in_detail_section.get('set_name', "N/A")
+        card_image_url_render = card_to_display_in_detail_section.get('image_url', None)
+        card_supertype_render = card_to_display_in_detail_section.get('supertype', "N/A")
+        card_rarity_render = card_to_display_in_detail_section.get('rarity', "N/A")
+        card_artist_render = card_to_display_in_detail_section.get('artist_name', card_to_display_in_detail_section.get('artist', None))
+        card_price_actual_render = card_to_display_in_detail_section.get('price', None)
+        if pd.isna(card_price_actual_render) and id_for_detail_view_from_session and not results_df.empty and id_for_detail_view_from_session in results_df['id'].values:
+             price_check = results_df[results_df['id'] == id_for_detail_view_from_session]['price'].iloc[0]
+             if pd.notna(price_check): card_price_actual_render = price_check
+        cardmarket_url_render = card_to_display_in_detail_section.get('cardmarket_url', None)
+        tcgplayer_url_render = card_to_display_in_detail_section.get('tcgplayer_url', None)
+        col_img, col_info = st.columns([1, 2])
+        with col_img:
+            if pd.notna(card_image_url_render): st.image(card_image_url_render, caption=f"{card_name_render} ({card_set_render})", width=300)
+            else: st.warning("Imagen no disponible.")
+            links_html = []
+            if pd.notna(cardmarket_url_render) and cardmarket_url_render.startswith("http"): links_html.append(f"<a href='{cardmarket_url_render}' target='_blank' style='...'>Cardmarket</a>")
+            if pd.notna(tcgplayer_url_render) and tcgplayer_url_render.startswith("http"): links_html.append(f"<a href='{tcgplayer_url_render}' target='_blank' style='...'>TCGplayer</a>")
+            if links_html: st.markdown(" ".join(links_html), unsafe_allow_html=True)
+            else: st.caption("Links no disponibles.")
+        with col_info:
+            st.subheader(f"{card_name_render}")
+            st.markdown(f"**ID:** `{card_id_render}`"); st.markdown(f"**Categoría:** {card_supertype_render}"); st.markdown(f"**Set:** {card_set_render}"); st.markdown(f"**Rareza:** {card_rarity_render}")
+            if pd.notna(card_artist_render): st.markdown(f"**Artista:** {card_artist_render}")
+            if pd.notna(card_price_actual_render): st.metric(label="Precio Actual (Trend €)", value=f"€{card_price_actual_render:.2f}")
+            else: st.markdown("**Precio Actual (Trend €):** N/A")
+            st.markdown("---"); st.subheader("Estimaciones de Precio")
             if mlp_model_layer and mlp_ohe and mlp_scaler:
                 if pd.notna(card_price_actual_render):
                     if st.button("🔮 Estimar Precio Futuro (MLP)", key=f"predict_mlp_btn_{card_id_render}"):
                         with st.spinner("Calculando estimación futura (MLP)..."):
-                            # Asegurar que card_to_display_in_detail_section tiene las columnas esperadas por MLP
-                            # (artist_name, pokemon_name, etc.)
-                            pred_price_mlp = predict_price_with_local_tf_layer(
-                                mlp_model_layer, mlp_ohe, mlp_scaler,
-                                card_to_display_in_detail_section # Esta Series debe tener las columnas _MLP_CAT_COLS
-                            )
+                            pred_price_mlp = predict_price_with_local_tf_layer(mlp_model_layer, mlp_ohe, mlp_scaler, card_to_display_in_detail_section)
                         if pred_price_mlp is not None:
                             delta_mlp = pred_price_mlp - card_price_actual_render
                             delta_color_mlp = "normal" if delta_mlp < -0.01 else ("inverse" if delta_mlp > 0.01 else "off")
-                            st.metric(label="Estimado Futuro (MLP)", value=f"€{pred_price_mlp:.2f}",
-                                      delta=f"{delta_mlp:+.2f}€ vs Actual", delta_color=delta_color_mlp)
+                            st.metric(label="Estimado Futuro (MLP)", value=f"€{pred_price_mlp:.2f}", delta=f"{delta_mlp:+.2f}€ vs Actual", delta_color=delta_color_mlp)
                         else: st.warning("No se pudo obtener estimación futura (MLP).")
-                else:
-                     st.info("Estimación futura (MLP) no posible sin precio actual para la carta.")
-            else:
-                 st.caption("Modelo MLP de predicción futura no disponible.")
-
-            # Botón para LGBM (Precio Justo)
-            if lgbm_pipeline_high or lgbm_pipeline_low: # Al menos uno debe estar cargado
-                # Para LGBM, necesitamos las columnas de input correctas en card_to_display_in_detail_section
-                # results_df (fuente de card_to_display_in_detail_section) ya debería tenerlas
-                # gracias a la query SQL actualizada.
+                else: st.info("Estimación futura (MLP) no posible sin precio actual.")
+            else: st.caption("Modelo MLP no disponible.")
+            if lgbm_pipeline_high or lgbm_pipeline_low:
                 input_df_for_lgbm = pd.DataFrame([card_to_display_in_detail_section])
-
-                # Verificar si tenemos las columnas numéricas para la decisión y el modelo LGBM
-                # Si no, el botón no debería aparecer o debería estar deshabilitado.
                 can_predict_lgbm = all(col in input_df_for_lgbm.columns and pd.notna(input_df_for_lgbm[col].iloc[0]) for col in _LGBM_NUM_FEATURES_INPUT)
-
                 if can_predict_lgbm:
                     if st.button("⚖️ Calcular Precio Justo (LGBM)", key=f"predict_lgbm_btn_{card_id_render}"):
                         with st.spinner("Calculando precio justo (LGBM)..."):
-                            pred_price_lgbm, pipeline_lgbm = predict_price_with_lgbm_pipelines_app(
-                                input_df_for_lgbm,
-                                lgbm_threshold_config,
-                                lgbm_pipeline_high,
-                                lgbm_pipeline_low
-                            )
+                            pred_price_lgbm, pipeline_lgbm = predict_price_with_lgbm_pipelines_app(input_df_for_lgbm, lgbm_threshold_config, lgbm_pipeline_high, lgbm_pipeline_low)
                         if pred_price_lgbm is not None:
                             st.metric(label=f"Precio Justo Estimado ({pipeline_lgbm})", value=f"€{pred_price_lgbm:.2f}")
-                            if pd.notna(card_price_actual_render): # Solo mostrar delta si hay precio actual
-                                delta_lgbm = pred_price_lgbm - card_price_actual_render
-                                st.caption(f"Diferencia con precio actual: {delta_lgbm:+.2f}€")
-                        else:
-                            st.warning("No se pudo obtener el precio justo (LGBM).")
-                else:
-                    st.info("Cálculo de precio justo (LGBM) no posible sin datos de precios recientes (cm_avgX, trendPrice).")
-            else:
-                st.caption("Modelos LGBM de precio justo no disponibles.")
-# ... (resto del código: sección else para if st.session_state..., y pie de página de sidebar sin cambios) ...
-# (Pega aquí el resto del código desde la v1.6, desde la sección de detalles,
-#  asegurándote de que la lógica de los botones de predicción se ajuste como arriba)
-
+                            if pd.notna(card_price_actual_render): delta_lgbm = pred_price_lgbm - card_price_actual_render; st.caption(f"Diferencia con precio actual: {delta_lgbm:+.2f}€")
+                        else: st.warning("No se pudo obtener el precio justo (LGBM).")
+                else: st.info("Cálculo de precio justo (LGBM) no posible sin datos de precios recientes (cm_avgX, trendPrice).")
+            else: st.caption("Modelos LGBM no disponibles.")
 else:
-    # Si no hay ninguna carta seleccionada en session_state, mostramos un mensaje guía.
-    # Esto ocurrirá si results_df está vacío Y no es la carga inicial (aplicó filtro y no encontró)
-    # O si results_df está vacío en la carga inicial (no hay datos en BQ), O si se resetea el estado.
-    # La lógica de fallback ya seleccionó una carta si results_df NO está vacío.
-    # Por lo tanto, este 'else' solo se ejecuta si session_state.selected_card_id_from_grid is None.
-    # Si results_df está vacío, la sección de detalles no se muestra, y el usuario ve un mensaje abajo.
-    # Si results_df NO está vacío, la lógica de fallback ya puso un ID en session_state,
-    # y la sección de detalles (if st.session_state.selected_card_id_from_grid is not None:) se ejecutará.
-    # No necesitamos un mensaje aquí, ya que el flujo principal o el fallback manejan la visualización.
-    pass # No mostrar nada si no hay selección, la sección de detalles ya maneja si mostrarse o no.
-
+    if results_df.empty:
+         if not is_initial_unfiltered_load: st.info("No se encontraron cartas con los filtros seleccionados.")
+         else:
+              if bq_client and LATEST_SNAPSHOT_TABLE:
+                   if not all_card_metadata_df.empty: st.info("No se encontraron cartas con precio en la base de datos actual.")
+                   else: st.error("Error interno: No se cargaron los datos de metadatos.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.7 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.8 | TF: {tf.__version__}")
