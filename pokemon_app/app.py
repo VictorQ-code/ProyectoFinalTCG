@@ -654,7 +654,7 @@ if st.session_state.selected_card_id_from_grid is not None:
 else:
     # Si no hay ninguna carta seleccionada en session_state, mostramos un mensaje guía.
     # Esto ocurrirá si results_df está vacío Y no es la carga inicial (aplicó filtro y no encontró)
-    # O si results_df está vacío en la carga inicial (no hay datos en BQ).
+    # O si results_df está vacío en la carga inicial (no hay datos en BQ), O si se resetea el estado.
     # La lógica de fallback ya seleccionó una carta si results_df NO está vacío.
     # Por lo tanto, este 'else' solo se ejecuta si session_state.selected_card_id_from_grid is None.
     # Si results_df está vacío, la sección de detalles no se muestra, y el usuario ve un mensaje abajo.
@@ -665,4 +665,4 @@ else:
 
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.6 | TF: {tf.__version__}")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.7 | TF: {tf.__version__}")
