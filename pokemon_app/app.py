@@ -55,7 +55,7 @@ PIPE_HIGH_LGBM_PATH = os.path.join(LGBM_MODEL_DIR, PIPE_HIGH_PKL_FILENAME)
 THRESHOLD_LGBM_PATH = os.path.join(LGBM_MODEL_DIR, THRESHOLD_JSON_FILENAME)
 
 # --- CONFIGURACIÓN DE FEATURES PARA LGBM ---
-_LGBM_NUMERIC_FEATURES_APP = ['cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
+_LGBM_NUMERIC_FEATURES_APP = ['prev_price', 'days_since_prev_snapshot','cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
 _LGBM_CATEGORICAL_FEATURES_APP = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
 _LGBM_ALL_FEATURES_APP = _LGBM_NUMERIC_FEATURES_APP + _LGBM_CATEGORICAL_FEATURES_APP
 _LGBM_THRESHOLD_COLUMN_APP = 'cm_avg7'
