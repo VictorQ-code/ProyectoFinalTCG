@@ -357,7 +357,7 @@ def predict_price_with_mlp(
         cat_feat = mlp_ohe.transform(df_prep[_MLP_CAT_COLS].astype(str))
         X_final = np.concatenate([num_feat, cat_feat], axis=1)
 
-        EXPECTED_MLP_FEATURES = 4865
+        EXPECTED_MLP_FEATURES = 4865 # Asegúrate de que este número sea correcto
         if X_final.shape[1] != EXPECTED_MLP_FEATURES:
             logger.error(f"MLP SHAPE MISMATCH! Expected {EXPECTED_MLP_FEATURES}, got {X_final.shape[1]}")
             return None
@@ -375,6 +375,7 @@ def predict_price_with_lgbm_pipelines_app(
 ) -> tuple[float | None, str | None]:
     logger.info(f"LGBM_PRED_APP: Iniciando predicción para carta ID: {card_data_series.get('id', 'N/A')}")
     model_type_used = "N/A"
+    # Usar los parámetros correctos para los pipelines cargados
     if not pipe_low_lgbm_loaded or not pipe_high_lgbm_loaded:
         logger.error("LGBM_PRED_APP: Uno o ambos pipelines LGBM no cargados.")
         return None, model_type_used
@@ -382,8 +383,10 @@ def predict_price_with_lgbm_pipelines_app(
         input_dict = {}
         for col_name in _LGBM_ALL_FEATURES_APP:
             # Mapeo especial para 'pokemon_name' y 'artist_name' para LGBM
-            if col_name == 'pokemon_name': val = card_data_series.get('name') # LGBM espera 'pokemon_name', tomamos de 'name'
-            elif col_name == 'artist_name': val = card_data_series.get('artist') # LGBM espera 'artist_name', tomamos de 'artist'
+            # Cuando col_name es 'pokemon_name', 'val' toma el valor de card_data_series['name'].
+            # Cuando col_name es 'artist_name', 'val' toma el valor de card_data_series['artist'].
+            if col_name == 'pokemon_name': val = card_data_series.get('name')
+            elif col_name == 'artist_name': val = card_data_series.get('artist')
             elif col_name == 'prev_price': val = card_data_series.get('price')
             elif col_name == 'days_since_prev_snapshot': val = card_data_series.get('days_since_prev_snapshot', 30.0)
             else: val = card_data_series.get(col_name)
@@ -401,7 +404,9 @@ def predict_price_with_lgbm_pipelines_app(
                     elif pd.notna(val): input_dict[col_name] = str(val)
                     else: input_dict[col_name] = 'None'
                 else: # Para artist_name, pokemon_name, rarity, set_name, supertype
-                     input_dict[col_name] = str(val) if pd.notna(val) else f'Unknown_{col_name.replace("_name","").capitalize()}' # Mantiene nombres originales
+                     # 'val' aquí ya tiene el valor correcto (p.ej., de card_data_series.get('name') si col_name es 'pokemon_name').
+                     # Así, input_dict['pokemon_name'] = str(card_data_series.get('name')), etc.
+                     input_dict[col_name] = str(val) if pd.notna(val) else f'Unknown_{col_name.replace("_name","").capitalize()}'
 
         X_new_predict_df = pd.DataFrame([input_dict])
         missing_cols = [col for col in _LGBM_ALL_FEATURES_APP if col not in X_new_predict_df.columns]
@@ -409,9 +414,10 @@ def predict_price_with_lgbm_pipelines_app(
         X_new_predict_for_pipe = X_new_predict_df[_LGBM_ALL_FEATURES_APP]
 
         threshold_feature_value = X_new_predict_for_pipe.loc[0, _LGBM_THRESHOLD_COLUMN_APP]
-        if pd.isna(threshold_feature_value): threshold_feature_value = threshold_value - 1
+        if pd.isna(threshold_feature_value): threshold_feature_value = threshold_value - 1 # Asumir valor bajo si la característica de umbral es NaN
 
-        active_pipe = pipe_low_lgbm_app if threshold_feature_value < threshold_value else pipe_high_lgbm_app
+        # CORRECCIÓN: Usar las variables de parámetros 'pipe_low_lgbm_loaded' y 'pipe_high_lgbm_loaded'
+        active_pipe = pipe_low_lgbm_loaded if threshold_feature_value < threshold_value else pipe_high_lgbm_loaded
         model_type_used = "Bajo Precio" if threshold_feature_value < threshold_value else "Alto Precio"
         logger.info(f"LGBM_PRED_APP: Usando pipeline de {model_type_used} basado en {_LGBM_THRESHOLD_COLUMN_APP}={threshold_feature_value}")
 
@@ -516,8 +522,8 @@ elif not is_initial_unfiltered_load:
         cols_in_df_for_display = [col for col in display_columns_mapping.keys() if col in results_df_for_aggrid_display.columns]
         final_display_df_aggrid = results_df_for_aggrid_display[cols_in_df_for_display].copy()
         final_display_df_aggrid.rename(columns=display_columns_mapping, inplace=True)
-        price_display_col_name_in_aggrid = display_columns_mapping.get('Precio (€)')
-        if price_display_col_name_in_aggrid and price_display_col_name_in_aggrid in final_display_df_aggrid.columns:
+        price_display_col_name_in_aggrid = display_columns_mapping.get('Precio (€)') # Esto debe ser 'Precio (€)'
+        if price_display_col_name_in_aggrid and price_display_col_name_in_aggrid in final_display_df_aggrid.columns: # Corregido el error lógico
              final_display_df_aggrid[price_display_col_name_in_aggrid] = final_display_df_aggrid[price_display_col_name_in_aggrid].apply(lambda x: f"€{x:.2f}" if pd.notna(x) else "N/A")
         gb = GridOptionsBuilder.from_dataframe(final_display_df_aggrid)
         gb.configure_selection(selection_mode='single', use_checkbox=False); gb.configure_grid_options(domLayout='normal')
@@ -606,18 +612,37 @@ if st.session_state.selected_card_id_from_grid is not None:
                 st.caption("Modelo MLP para estimación futura no disponible.")
 
             # Botón de Predicción LGBM
-            if lgbm_pipeline_high or lgbm_pipeline_low:
-                required_lgbm_button_cols = ['price', _LGBM_THRESHOLD_COLUMN_APP] + _LGBM_CAT_FEATURES_INPUT
+            if lgbm_pipeline_high or lgbm_pipeline_low: # Chequear si al menos uno está cargado
+                # Comprobar si tenemos los datos necesarios para LGBM
+                # LGBM espera 'pokemon_name' y 'artist_name' en sus features.
+                # En card_to_display_in_detail_section, estos datos están en 'name' y 'artist'.
+                # La función predict_price_with_lgbm_pipelines_app maneja este mapeo.
+                # Aquí solo necesitamos asegurarnos de que 'name' y 'artist' existen,
+                # y que las otras columnas directas (prev_price, cm_avg7, etc.) están presentes.
+                required_lgbm_button_cols = ['name', 'artist', 'price', _LGBM_THRESHOLD_COLUMN_APP] + \
+                                            [col for col in _LGBM_CAT_FEATURES_INPUT if col not in ['pokemon_name', 'artist_name']] + \
+                                            [col for col in _LGBM_NUM_FEATURES_INPUT if col != 'prev_price'] # 'price' se usa para 'prev_price'
+
                 required_lgbm_button_cols = list(set(required_lgbm_button_cols))
+
 
                 can_predict_lgbm = all(
                     col in card_to_display_in_detail_section.index and \
                     pd.notna(card_to_display_in_detail_section.get(col)) for col in required_lgbm_button_cols
                 )
+                
+                # Adicionalmente, chequear específicamente 'days_since_prev_snapshot' que puede estar en 'results_df' pero no 'all_card_metadata_df'
+                # y que la función de predicción asigna un default si no está. Aquí lo chequearemos explícitamente por consistencia de botón.
+                if 'days_since_prev_snapshot' not in card_to_display_in_detail_section.index or pd.isna(card_to_display_in_detail_section.get('days_since_prev_snapshot')):
+                     # Para el botón, consideraremos que no se puede si no está explícitamente.
+                     # La función de predicción le pone un default si no existe, pero aquí nos interesa si los datos *originales* son suficientes
+                     #logger.info("LGBM_BTN_CHECK: 'days_since_prev_snapshot' no encontrado o NaN, predicción posible con default pero botón podría ocultarse.")
+                     pass # Dejar que el all() decida si se oculta
 
                 if can_predict_lgbm:
                      if st.button("⚖️ Calcular Precio Justo (LGBM)", key=f"predict_lgbm_btn_{card_id_render}"):
                          with st.spinner("Calculando precio justo (LGBM)..."):
+                             # Los pipelines cargados se llaman lgbm_pipeline_low y lgbm_pipeline_high
                              pred_price_lgbm, pipeline_lgbm_used = predict_price_with_lgbm_pipelines_app(
                                  lgbm_pipeline_low, lgbm_pipeline_high, lgbm_threshold_value,
                                  card_to_display_in_detail_section
@@ -629,8 +654,20 @@ if st.session_state.selected_card_id_from_grid is not None:
                               st.metric(label=f"Precio Justo Estimado ({pipeline_lgbm_used})", value=f"€{pred_price_lgbm:.2f}")
                          else: st.warning("No se pudo obtener el precio justo (LGBM).")
                 else:
-                     missing_pred_cols_lgbm = [col for col in required_lgbm_button_cols if col not in card_to_display_in_detail_section.index or pd.isna(card_to_display_in_detail_section.get(col))]
-                     st.info(f"Datos insuficientes para estimación de precio justo LGBM (faltan o son NaN: {', '.join(missing_pred_cols_lgbm)}).")
+                     missing_pred_cols_lgbm_display = []
+                     for col in required_lgbm_button_cols:
+                         if col not in card_to_display_in_detail_section.index or pd.isna(card_to_display_in_detail_section.get(col)):
+                             display_col_name = col
+                             if col == 'name': display_col_name = 'nombre (para pokemon_name de LGBM)'
+                             if col == 'artist': display_col_name = 'artista (para artist_name de LGBM)'
+                             if col == 'price': display_col_name = 'precio (para prev_price de LGBM)'
+                             missing_pred_cols_lgbm_display.append(display_col_name)
+
+                     if 'days_since_prev_snapshot' not in card_to_display_in_detail_section.index or pd.isna(card_to_display_in_detail_section.get('days_since_prev_snapshot')):
+                         if 'days_since_prev_snapshot' not in missing_pred_cols_lgbm_display:
+                            missing_pred_cols_lgbm_display.append('days_since_prev_snapshot')
+                            
+                     st.info(f"Datos insuficientes para estimación de precio justo LGBM (faltan o son NaN: {', '.join(sorted(list(set(missing_pred_cols_lgbm_display))))}).")
             else:
                  st.caption("Modelos LGBM para estimación de precio justo no disponibles.")
 else:
@@ -640,4 +677,4 @@ else:
         else: st.info("No se encontraron cartas destacadas ni otros resultados iniciales.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.20 | MLP & LGBM")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.21 | MLP & LGBM")
