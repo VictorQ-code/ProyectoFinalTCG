@@ -7,11 +7,11 @@ import logging
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import numpy as np
 import os
-import tensorflow as tf # Mantenido por si cambias de modelo MLP a TF
-import joblib # Para cargar los pipelines .pkl
+# import tensorflow as tf # Comentado si solo usas LGBM
+import joblib
 import typing
 import random
-import json # Para cargar el threshold
+import json
 
 # --- Configuración Inicial ---
 st.set_page_config(layout="wide", page_title="Pokémon TCG Explorer")
@@ -21,8 +21,8 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
-logger.info(f"TensorFlow Version: {tf.__version__}")
-logger.info(f"Keras Version (via TF): {tf.keras.__version__}")
+# logger.info(f"TensorFlow Version: {tf.__version__}") # Comentado si no se usa TF
+# logger.info(f"Keras Version (via TF): {tf.keras.__version__}")
 
 
 # --- Constantes y Configuración de GCP ---
@@ -46,7 +46,6 @@ MAX_ROWS_NO_FILTER = 200
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_ARTIFACTS_DIR = os.path.join(BASE_DIR, "model_files")
 
-# LightGBM (Pipelines) - Modelo activo
 LGBM_MODEL_DIR = os.path.join(MODEL_ARTIFACTS_DIR, "lgbm_models")
 PIPE_LOW_PKL_FILENAME = "modelo_pipe_low.pkl"
 PIPE_HIGH_PKL_FILENAME = "modelo_pipe_high.pkl"
@@ -55,18 +54,12 @@ PIPE_LOW_LGBM_PATH = os.path.join(LGBM_MODEL_DIR, PIPE_LOW_PKL_FILENAME)
 PIPE_HIGH_LGBM_PATH = os.path.join(LGBM_MODEL_DIR, PIPE_HIGH_PKL_FILENAME)
 THRESHOLD_LGBM_PATH = os.path.join(LGBM_MODEL_DIR, THRESHOLD_JSON_FILENAME)
 
-
 # --- CONFIGURACIÓN DE FEATURES PARA LGBM ---
-_LGBM_NUMERIC_FEATURES_APP = [
-    'prev_price', 'days_since_prev_snapshot',
-    'cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice'
-]
-_LGBM_CATEGORICAL_FEATURES_APP = [
-    'artist_name', 'pokemon_name', 'rarity',
-    'set_name', 'types', 'supertype', 'subtypes'
-]
+_LGBM_NUMERIC_FEATURES_APP = ['prev_price', 'days_since_prev_snapshot', 'cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
+_LGBM_CATEGORICAL_FEATURES_APP = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
 _LGBM_ALL_FEATURES_APP = _LGBM_NUMERIC_FEATURES_APP + _LGBM_CATEGORICAL_FEATURES_APP
 _LGBM_THRESHOLD_COLUMN_APP = 'cm_avg7'
+_LGBM_TARGET_IS_LOG_TRANSFORMED = True # Asumiendo que los modelos LGBM también predicen log1p
 
 # --- CONFIGURACIÓN PARA CARTAS DESTACADAS ---
 FEATURED_RARITY = 'Special Illustration Rare'
@@ -128,24 +121,20 @@ threshold_lgbm_app = load_threshold_from_json(THRESHOLD_LGBM_PATH)
 
 # --- FUNCIONES UTILITARIAS DE DATOS ---
 @st.cache_data(ttl=3600)
-def get_latest_snapshot_info(_client: bigquery.Client) -> tuple[str | None, pd.Timestamp | None]: # Devuelve ruta y fecha
+def get_latest_snapshot_info(_client: bigquery.Client) -> tuple[str | None, pd.Timestamp | None]:
     query = f"SELECT table_id FROM `{_client.project}.{BIGQUERY_DATASET}`.__TABLES__ WHERE STARTS_WITH(table_id, 'monthly_') ORDER BY table_id DESC LIMIT 1"
     try:
         results = _client.query(query).result()
         if results.total_rows > 0:
-            latest_table_id_str = list(results)[0].table_id # ej. "monthly_2025_04_30"
+            latest_table_id_str = list(results)[0].table_id
             full_table_path = f"{_client.project}.{BIGQUERY_DATASET}.{latest_table_id_str}"
-            date_str_from_suffix = latest_table_id_str.replace("monthly_", "") # "2025_04_30"
+            date_str_from_suffix = latest_table_id_str.replace("monthly_", "")
             snapshot_date = pd.to_datetime(date_str_from_suffix, format='%Y_%m_%d')
             logger.info(f"SNAPSHOT_INFO: Usando tabla: {full_table_path}, Fecha Snapshot: {snapshot_date.date()}")
             return full_table_path, snapshot_date
         logger.warning("SNAPSHOT_TABLE: No se encontraron tablas snapshot 'monthly_...'.")
-        st.warning("Advertencia: No se encontraron tablas de precios ('monthly_...').")
         return None, None
-    except Exception as e:
-        logger.error(f"SNAPSHOT_TABLE: Error buscando tabla snapshot: {e}", exc_info=True)
-        st.error(f"Error al buscar la tabla de precios más reciente: {e}.")
-        return None, None
+    except Exception as e: logger.error(f"SNAPSHOT_TABLE: Error: {e}", exc_info=True); return None, None
 
 POKEMON_SUFFIXES_TO_REMOVE = [' VMAX', ' VSTAR', ' V-UNION', ' V', ' GX', ' EX', ' BREAK', ' Prism Star', ' Star', ' Radiant', ' δ', ' Tag Team', ' & ', ' Light', ' Dark', ' ◇', ' ☆']
 MULTI_WORD_BASE_NAMES = ["Mr. Mime", "Mime Jr.", "Farfetch'd", "Sirfetch'd", "Ho-Oh", "Porygon-Z", "Type: Null", "Tapu Koko", "Tapu Lele", "Tapu Bulu", "Tapu Fini", "Mr. Rime", "Indeedee M", "Indeedee F", "Great Tusk", "Iron Treads"]
@@ -161,16 +150,17 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
 
 @st.cache_data(ttl=3600)
 def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
+    # CORRECCIÓN: Usar nombres de columna reales de BQ y aplicar alias
     query = f"""
     SELECT
         id,
-        name         AS pokemon_name,
+        name         AS pokemon_name, -- Nombre original de la carta
         supertype,
         subtypes,
         types,
         rarity,
         set_name,
-        artist       AS artist_name,
+        artist       AS artist_name,  -- Nombre del artista
         images_large AS image_url,
         cardmarket_url,
         tcgplayer_url
@@ -207,7 +197,7 @@ def fetch_card_data_from_bq(
     full_metadata_df_param: pd.DataFrame
 ) -> pd.DataFrame:
     logger.info(f"FETCH_BQ_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
-
+    
     ids_to_query_df = full_metadata_df_param.copy()
     if supertype_ui_filter and supertype_ui_filter != "Todos": ids_to_query_df = ids_to_query_df[ids_to_query_df['supertype'] == supertype_ui_filter]
     if sets_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['set_name'].isin(sets_ui_filter)]
@@ -222,17 +212,26 @@ def fetch_card_data_from_bq(
 
     snapshot_date_str_for_query = snapshot_date_param.strftime('%Y-%m-%d')
 
+    # CORRECCIÓN: Usar nombres de columna reales de BQ y aplicar alias
     query_sql_template = f"""
     SELECT
-        meta.id, meta.pokemon_name, meta.supertype, meta.subtypes, meta.types,
-        meta.set_name, meta.rarity, meta.artist_name, meta.images_large AS image_url,
-        meta.cardmarket_url, meta.tcgplayer_url,
-        prices.cm_averageSellPrice AS precio,
+        meta.id,
+        meta.name AS pokemon_name,         -- De CARD_METADATA_TABLE (alias meta)
+        meta.supertype,
+        meta.subtypes,
+        meta.types,
+        meta.set_name,
+        meta.rarity,
+        meta.artist AS artist_name,        -- De CARD_METADATA_TABLE (alias meta)
+        meta.images_large AS image_url,
+        meta.cardmarket_url,
+        meta.tcgplayer_url,
+        prices.cm_averageSellPrice AS precio, -- De la tabla de precios
         prices.cm_trendPrice,
         prices.cm_avg1,
         prices.cm_avg7,
         prices.cm_avg30,
-        DATE('{snapshot_date_str_for_query}') AS fecha_snapshot -- Usar la fecha pasada como literal
+        DATE('{snapshot_date_str_for_query}') AS fecha_snapshot
     FROM `{CARD_METADATA_TABLE}` AS meta
     LEFT JOIN `{latest_table_path_param}` AS prices ON meta.id = prices.id -- Usar 'id' de la tabla prices
     WHERE meta.id IN UNNEST(@card_ids_param)
@@ -270,7 +269,7 @@ def predict_price_with_lgbm_pipelines_app(
         current_price_val = card_data_for_prediction.get('precio')
         input_dict['prev_price'] = float(current_price_val) if pd.notna(current_price_val) else 0.0
         if pd.isna(current_price_val): logger.warning(f"LGBM_PRED_APP: 'prev_price' (de 'precio' actual) es NaN. Usando 0.0.")
-        input_dict['days_since_prev_snapshot'] = 30.0 # Horizonte de predicción
+        input_dict['days_since_prev_snapshot'] = 30.0
 
         for col_name in ['cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']:
             val = card_data_for_prediction.get(col_name)
@@ -292,24 +291,23 @@ def predict_price_with_lgbm_pipelines_app(
             st.error(f"Error Interno: Faltan datos para predicción LGBM ({', '.join(missing_cols)}).")
             return None
         
-        X_new_predict_for_pipe = X_new_predict_df[_LGBM_ALL_FEATURES_APP] # Asegurar orden y selección
+        X_new_predict_for_pipe = X_new_predict_df[_LGBM_ALL_FEATURES_APP]
         threshold_feature_value = X_new_predict_for_pipe.loc[0, _LGBM_THRESHOLD_COLUMN_APP]
         active_pipe = pipe_low_lgbm_loaded if threshold_feature_value < threshold_lgbm_value else pipe_high_lgbm_loaded
         model_type_used = "Low-Price Pipe" if threshold_feature_value < threshold_lgbm_value else "High-Price Pipe"
         logger.info(f"LGBM_PRED_APP: Usando {model_type_used} basado en {_LGBM_THRESHOLD_COLUMN_APP}={threshold_feature_value}")
         pred_log = active_pipe.predict(X_new_predict_for_pipe)
-        prediction_final = np.expm1(pred_log[0])
+        prediction_final = np.expm1(pred_log[0]) if _LGBM_TARGET_IS_LOG_TRANSFORMED else pred_log[0] # Usar constante global
         logger.info(f"LGBM_PRED_APP: Predicción (escala original): {prediction_final:.2f}€")
         return float(prediction_final)
     except KeyError as e_key: logger.error(f"LGBM_PRED_APP: KeyError: {e_key}", exc_info=True); st.error(f"Error Datos: Falta '{e_key}'."); return None
     except Exception as e: logger.error(f"LGBM_PRED_APP_EXC: Excepción: {e}", exc_info=True); st.error(f"Error Predicción LGBM: {e}"); return None
 
-
 # --- Carga de Datos Inicial de BigQuery ---
 logger.info("APP_INIT: Cargando datos iniciales de BigQuery.")
-LATEST_SNAPSHOT_TABLE_PATH, LATEST_SNAPSHOT_DATE = get_latest_snapshot_info(bq_client) # <--- MODIFICADO AQUÍ
-all_card_metadata_df = get_card_metadata_with_base_names(bq_client)
-if not LATEST_SNAPSHOT_TABLE_PATH or LATEST_SNAPSHOT_DATE is None or all_card_metadata_df.empty: # <--- MODIFICADO AQUÍ
+LATEST_SNAPSHOT_TABLE_PATH, LATEST_SNAPSHOT_DATE = get_latest_snapshot_info(bq_client)
+all_card_metadata_df = get_card_metadata_with_base_names(bq_client) # Esta función ya usa los alias correctos
+if not LATEST_SNAPSHOT_TABLE_PATH or LATEST_SNAPSHOT_DATE is None or all_card_metadata_df.empty:
     logger.critical("APP_INIT_FAIL: Datos esenciales de BigQuery no cargados.")
     st.error("Error Crítico: No se pudieron cargar los datos esenciales de BigQuery.")
     st.stop()
@@ -341,11 +339,9 @@ sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 # --- Carga de results_df ---
 logger.info("MAIN_APP: Fetcheando resultados principales de BigQuery (basado en filtros de sidebar).")
 results_df = fetch_card_data_from_bq(
-    bq_client,
-    LATEST_SNAPSHOT_TABLE_PATH, # Pasar el path
-    LATEST_SNAPSHOT_DATE,       # Pasar la fecha
-    selected_supertype, selected_sets,
-    selected_names_to_filter, selected_rarities, sort_sql, all_card_metadata_df
+    bq_client, LATEST_SNAPSHOT_TABLE_PATH, LATEST_SNAPSHOT_DATE,
+    selected_supertype, selected_sets, selected_names_to_filter, selected_rarities,
+    sort_sql, all_card_metadata_df
 )
 logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
 
@@ -383,7 +379,7 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
                      if pd.notna(image_url_featured): st.image(image_url_featured, width=150, caption=card_set_featured)
                      else: st.warning("Imagen no disp."); st.caption(f"{card_name_featured} ({card_set_featured})")
              st.markdown("---")
-    if special_illustration_rares.empty and results_df.empty and is_initial_unfiltered_load and bq_client and LATEST_SNAPSHOT_TABLE_PATH: # Usar PATH
+    if special_illustration_rares.empty and results_df.empty and is_initial_unfiltered_load and bq_client and LATEST_SNAPSHOT_TABLE_PATH:
          st.info("No se encontraron cartas con la rareza destacada o con precio en la base de datos actual.")
 
 elif not is_initial_unfiltered_load:
@@ -405,7 +401,7 @@ elif not is_initial_unfiltered_load:
         gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25)
         gridOptions = gb.build()
         st.write("Haz clic en una fila de la tabla para ver sus detalles:")
-        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_vFINAL_LGBM_3') # Changed key
+        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_vFINAL_LGBM_4')
         if grid_response:
             selected_rows_data = grid_response.get('selected_rows')
             if selected_rows_data and not selected_rows_data.empty:
@@ -434,6 +430,9 @@ if st.session_state.selected_card_id_from_grid is not None:
         card_rarity_render = card_to_display_in_detail_section.get('rarity', "N/A")
         card_artist_render = card_to_display_in_detail_section.get('artist_name', None)
         card_price_actual_render = card_to_display_in_detail_section.get('precio', None)
+        if pd.isna(card_price_actual_render) and id_for_detail_view and not results_df.empty and id_for_detail_view in results_df['id'].values:
+             price_check = results_df[results_df['id'] == id_for_detail_view]['precio'].iloc[0]
+             if pd.notna(price_check): card_price_actual_render = price_check
         cardmarket_url_render = card_to_display_in_detail_section.get('cardmarket_url', None)
         tcgplayer_url_render = card_to_display_in_detail_section.get('tcgplayer_url', None)
         col_img, col_info = st.columns([1, 2])
@@ -449,13 +448,19 @@ if st.session_state.selected_card_id_from_grid is not None:
             st.subheader(f"{card_name_render}")
             st.markdown(f"**ID:** `{card_to_display_in_detail_section.get('id')}`"); st.markdown(f"**Categoría:** {card_supertype_render}"); st.markdown(f"**Set:** {card_set_render}"); st.markdown(f"**Rareza:** {card_rarity_render}")
             if pd.notna(card_artist_render): st.markdown(f"**Artista:** {card_artist_render}")
-            if pd.notna(card_price_actual_render): st.metric(label="Precio Actual (Trend €)", value=f"€{card_price_actual_render:.2f}")
-            else: st.markdown("**Precio Actual (Trend €):** N/A")
-            st.markdown("---"); st.subheader("Predicción de Precio (Modelo LGBM Estimado)")
+            if pd.notna(card_price_actual_render): st.metric(label="Precio Actual (€)", value=f"€{card_price_actual_render:.2f}") # Trend € eliminado para consistencia
+            else: st.markdown("**Precio Actual (€):** N/A")
+            st.markdown("---"); st.subheader("Estimaciones de Precio")
             
             if pipe_low_lgbm_app and pipe_high_lgbm_app and threshold_lgbm_app is not None:
-                if pd.notna(card_price_actual_render) and pd.notna(card_to_display_in_detail_section.get('cm_avg7')):
-                     if st.button("⚡ Estimar Precio Futuro (LGBM)", key=f"predict_lgbm_btn_{card_to_display_in_detail_section.get('id')}"):
+                # Asegurarse de que todas las columnas necesarias para LGBM estén en la serie de la carta
+                can_predict_lgbm = all(col in card_to_display_in_detail_section and pd.notna(card_to_display_in_detail_section[col]) for col in _LGBM_ALL_FEATURES_APP)
+                if not can_predict_lgbm:
+                    missing_lgbm_cols = [col for col in _LGBM_ALL_FEATURES_APP if col not in card_to_display_in_detail_section or pd.isna(card_to_display_in_detail_section[col])]
+                    logger.warning(f"LGBM PRED BUTTON: No se puede predecir. Faltan o son NaN las features: {missing_lgbm_cols} para la carta {card_to_display_in_detail_section.get('id')}")
+
+                if pd.notna(card_price_actual_render) and pd.notna(card_to_display_in_detail_section.get(_LGBM_THRESHOLD_COLUMN_APP)) and can_predict_lgbm:
+                     if st.button("⚡ Estimar Precio Actual (LGBM)", key=f"predict_lgbm_btn_{card_to_display_in_detail_section.get('id')}"): # Renombrado para reflejar que predice precio actual
                          with st.spinner("Calculando estimación (LGBM)..."):
                              pred_price = predict_price_with_lgbm_pipelines_app(
                                  pipe_low_lgbm_app, pipe_high_lgbm_app, threshold_lgbm_app,
@@ -464,10 +469,10 @@ if st.session_state.selected_card_id_from_grid is not None:
                          if pred_price is not None:
                              delta = pred_price - card_price_actual_render
                              delta_color = "normal" if delta < -0.01 else ("inverse" if delta > 0.01 else "off")
-                             st.metric(label="Precio Estimado (LGBM)", value=f"€{pred_price:.2f}", delta=f"{delta:+.2f}€", delta_color=delta_color)
+                             st.metric(label="Precio Justo Estimado (LGBM)", value=f"€{pred_price:.2f}", delta=f"{delta:+.2f}€ vs Actual", delta_color=delta_color)
                          else: st.warning("No se pudo obtener estimación (LGBM).")
                 else:
-                     st.info("Datos insuficientes (precio actual o cm_avg7) para la estimación con LGBM.")
+                     st.info("Datos insuficientes (precio actual, cm_avg7 u otras features) para la estimación con LGBM.")
             else: st.warning("Modelos LGBM o umbral no cargados.")
 else:
     if results_df.empty and not is_initial_unfiltered_load: st.info("No se encontraron cartas con los filtros seleccionados.")
