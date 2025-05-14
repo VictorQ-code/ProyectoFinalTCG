@@ -128,21 +128,27 @@ threshold_lgbm_app = load_threshold_from_json(THRESHOLD_LGBM_PATH)
 
 # --- FUNCIONES UTILITARIAS DE DATOS ---
 @st.cache_data(ttl=3600)
-def get_latest_snapshot_table(_client: bigquery.Client) -> str | None:
+def get_latest_snapshot_info(_client: bigquery.Client) -> tuple[str | None, pd.Timestamp | None]: # Devuelve ruta y fecha
     query = f"SELECT table_id FROM `{_client.project}.{BIGQUERY_DATASET}`.__TABLES__ WHERE STARTS_WITH(table_id, 'monthly_') ORDER BY table_id DESC LIMIT 1"
     try:
         results = _client.query(query).result()
         if results.total_rows > 0:
-            latest_table_id = list(results)[0].table_id
-            logger.info(f"SNAPSHOT_TABLE: Usando tabla snapshot: {latest_table_id}")
-            return f"{_client.project}.{BIGQUERY_DATASET}.{latest_table_id}"
+            latest_table_id_str = list(results)[0].table_id # ej. "monthly_2025_04_30"
+            full_table_path = f"{_client.project}.{BIGQUERY_DATASET}.{latest_table_id_str}"
+            date_str_from_suffix = latest_table_id_str.replace("monthly_", "") # "2025_04_30"
+            snapshot_date = pd.to_datetime(date_str_from_suffix, format='%Y_%m_%d')
+            logger.info(f"SNAPSHOT_INFO: Usando tabla: {full_table_path}, Fecha Snapshot: {snapshot_date.date()}")
+            return full_table_path, snapshot_date
         logger.warning("SNAPSHOT_TABLE: No se encontraron tablas snapshot 'monthly_...'.")
         st.warning("Advertencia: No se encontraron tablas de precios ('monthly_...').")
-        return None
-    except Exception as e: logger.error(f"SNAPSHOT_TABLE: Error: {e}", exc_info=True); st.error(f"Error al buscar tabla snapshot: {e}."); return None
+        return None, None
+    except Exception as e:
+        logger.error(f"SNAPSHOT_TABLE: Error buscando tabla snapshot: {e}", exc_info=True)
+        st.error(f"Error al buscar la tabla de precios más reciente: {e}.")
+        return None, None
 
 POKEMON_SUFFIXES_TO_REMOVE = [' VMAX', ' VSTAR', ' V-UNION', ' V', ' GX', ' EX', ' BREAK', ' Prism Star', ' Star', ' Radiant', ' δ', ' Tag Team', ' & ', ' Light', ' Dark', ' ◇', ' ☆']
-MULTI_WORD_BASE_NAMES = ["Mr. Mime", "Mime Jr.", "Farfetch'd", "Sirfetch'd", "Ho-Oh", "Porygon-Z", "Type: Null", "Tapu Koko", "Tapu Lele", "Tapu Bulu", "Tapu Fini", "Mr. Rime", "Indeedee M", "Indeedee F", "Great Tusk", "Iron Treads"] # yapf: disable
+MULTI_WORD_BASE_NAMES = ["Mr. Mime", "Mime Jr.", "Farfetch'd", "Sirfetch'd", "Ho-Oh", "Porygon-Z", "Type: Null", "Tapu Koko", "Tapu Lele", "Tapu Bulu", "Tapu Fini", "Mr. Rime", "Indeedee M", "Indeedee F", "Great Tusk", "Iron Treads"]
 
 def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
     if not isinstance(name_str, str) or supertype != 'Pokémon': return name_str
@@ -184,19 +190,24 @@ def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
         return df
     except Exception as e:
         if "db-dtypes" in str(e).lower(): logger.error("METADATA_BQ: Error de 'db-dtypes'.", exc_info=True); st.error("Error de Dependencia: Falta 'db-dtypes'.")
-        else: logger.error(f"METADATA_BQ: Error al cargar metadatos: {e}", exc_info=True); st.error(f"Error al cargar metadatos: {e}.")
+        else: logger.error(f"METADATA_BQ: Error al cargar metadatos de BigQuery: {e}", exc_info=True); st.error(f"Error al cargar metadatos de cartas: {e}.")
         return pd.DataFrame()
 
 # --- FUNCIÓN DE CONSULTA DE DATOS DE PRECIOS Y METADATOS COMBINADOS ---
 @st.cache_data(ttl=600)
 def fetch_card_data_from_bq(
-    _client: bigquery.Client, latest_table_path: str, supertype_ui_filter: str | None,
-    sets_ui_filter: list, names_ui_filter: list, rarities_ui_filter: list,
-    sort_direction: str, full_metadata_df_param: pd.DataFrame
+    _client: bigquery.Client,
+    latest_table_path_param: str,
+    snapshot_date_param: pd.Timestamp,
+    supertype_ui_filter: str | None,
+    sets_ui_filter: list,
+    names_ui_filter: list,
+    rarities_ui_filter: list,
+    sort_direction: str,
+    full_metadata_df_param: pd.DataFrame
 ) -> pd.DataFrame:
     logger.info(f"FETCH_BQ_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
-    if not latest_table_path: logger.error("FETCH_BQ_DATA_FAIL: 'latest_table_path' es None."); st.error("Error Interno: No se pudo determinar la tabla de precios."); return pd.DataFrame()
-    
+
     ids_to_query_df = full_metadata_df_param.copy()
     if supertype_ui_filter and supertype_ui_filter != "Todos": ids_to_query_df = ids_to_query_df[ids_to_query_df['supertype'] == supertype_ui_filter]
     if sets_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['set_name'].isin(sets_ui_filter)]
@@ -209,28 +220,21 @@ def fetch_card_data_from_bq(
     list_of_card_ids_to_query = ids_to_query_df['id'].unique().tolist()
     if not list_of_card_ids_to_query: logger.info("FETCH_BQ_DATA: Lista IDs vacía."); return pd.DataFrame()
 
-    # Query SQL actualizada con los nombres de columna correctos de las tablas de BQ
+    snapshot_date_str_for_query = snapshot_date_param.strftime('%Y-%m-%d')
+
     query_sql_template = f"""
     SELECT
-        meta.id,
-        meta.name AS pokemon_name,         -- CORRECCIÓN: Usar meta.name y darle alias
-        meta.supertype,
-        meta.subtypes,
-        meta.types,
-        meta.set_name,
-        meta.rarity,
-        meta.artist AS artist_name,        -- CORRECCIÓN: Usar meta.artist y darle alias
-        meta.images_large AS image_url,
-        meta.cardmarket_url,
-        meta.tcgplayer_url,
+        meta.id, meta.pokemon_name, meta.supertype, meta.subtypes, meta.types,
+        meta.set_name, meta.rarity, meta.artist_name, meta.images_large AS image_url,
+        meta.cardmarket_url, meta.tcgplayer_url,
         prices.cm_averageSellPrice AS precio,
         prices.cm_trendPrice,
         prices.cm_avg1,
         prices.cm_avg7,
         prices.cm_avg30,
-        PARSE_DATE('%Y_%m_%d', prices._TABLE_SUFFIX) AS fecha_snapshot
+        DATE('{snapshot_date_str_for_query}') AS fecha_snapshot -- Usar la fecha pasada como literal
     FROM `{CARD_METADATA_TABLE}` AS meta
-    LEFT JOIN `{latest_table_path}` AS prices ON meta.id = prices.id
+    LEFT JOIN `{latest_table_path_param}` AS prices ON meta.id = prices.id -- Usar 'id' de la tabla prices
     WHERE meta.id IN UNNEST(@card_ids_param)
     ORDER BY prices.cm_averageSellPrice {sort_direction}
     """
@@ -266,7 +270,7 @@ def predict_price_with_lgbm_pipelines_app(
         current_price_val = card_data_for_prediction.get('precio')
         input_dict['prev_price'] = float(current_price_val) if pd.notna(current_price_val) else 0.0
         if pd.isna(current_price_val): logger.warning(f"LGBM_PRED_APP: 'prev_price' (de 'precio' actual) es NaN. Usando 0.0.")
-        input_dict['days_since_prev_snapshot'] = 30.0
+        input_dict['days_since_prev_snapshot'] = 30.0 # Horizonte de predicción
 
         for col_name in ['cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']:
             val = card_data_for_prediction.get(col_name)
@@ -300,11 +304,12 @@ def predict_price_with_lgbm_pipelines_app(
     except KeyError as e_key: logger.error(f"LGBM_PRED_APP: KeyError: {e_key}", exc_info=True); st.error(f"Error Datos: Falta '{e_key}'."); return None
     except Exception as e: logger.error(f"LGBM_PRED_APP_EXC: Excepción: {e}", exc_info=True); st.error(f"Error Predicción LGBM: {e}"); return None
 
+
 # --- Carga de Datos Inicial de BigQuery ---
 logger.info("APP_INIT: Cargando datos iniciales de BigQuery.")
-LATEST_SNAPSHOT_TABLE = get_latest_snapshot_table(bq_client)
+LATEST_SNAPSHOT_TABLE_PATH, LATEST_SNAPSHOT_DATE = get_latest_snapshot_info(bq_client) # <--- MODIFICADO AQUÍ
 all_card_metadata_df = get_card_metadata_with_base_names(bq_client)
-if not LATEST_SNAPSHOT_TABLE or all_card_metadata_df.empty:
+if not LATEST_SNAPSHOT_TABLE_PATH or LATEST_SNAPSHOT_DATE is None or all_card_metadata_df.empty: # <--- MODIFICADO AQUÍ
     logger.critical("APP_INIT_FAIL: Datos esenciales de BigQuery no cargados.")
     st.error("Error Crítico: No se pudieron cargar los datos esenciales de BigQuery.")
     st.stop()
@@ -336,7 +341,10 @@ sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 # --- Carga de results_df ---
 logger.info("MAIN_APP: Fetcheando resultados principales de BigQuery (basado en filtros de sidebar).")
 results_df = fetch_card_data_from_bq(
-    bq_client, LATEST_SNAPSHOT_TABLE, selected_supertype, selected_sets,
+    bq_client,
+    LATEST_SNAPSHOT_TABLE_PATH, # Pasar el path
+    LATEST_SNAPSHOT_DATE,       # Pasar la fecha
+    selected_supertype, selected_sets,
     selected_names_to_filter, selected_rarities, sort_sql, all_card_metadata_df
 )
 logger.info(f"MAIN_APP: 'results_df' cargado con {len(results_df)} filas.")
@@ -375,7 +383,7 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
                      if pd.notna(image_url_featured): st.image(image_url_featured, width=150, caption=card_set_featured)
                      else: st.warning("Imagen no disp."); st.caption(f"{card_name_featured} ({card_set_featured})")
              st.markdown("---")
-    if special_illustration_rares.empty and results_df.empty and is_initial_unfiltered_load and bq_client and LATEST_SNAPSHOT_TABLE:
+    if special_illustration_rares.empty and results_df.empty and is_initial_unfiltered_load and bq_client and LATEST_SNAPSHOT_TABLE_PATH: # Usar PATH
          st.info("No se encontraron cartas con la rareza destacada o con precio en la base de datos actual.")
 
 elif not is_initial_unfiltered_load:
@@ -397,7 +405,7 @@ elif not is_initial_unfiltered_load:
         gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25)
         gridOptions = gb.build()
         st.write("Haz clic en una fila de la tabla para ver sus detalles:")
-        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_vFINAL_LGBM_2') # Changed key
+        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_vFINAL_LGBM_3') # Changed key
         if grid_response:
             selected_rows_data = grid_response.get('selected_rows')
             if selected_rows_data and not selected_rows_data.empty:
@@ -468,4 +476,4 @@ else:
         else: st.info("No se encontraron cartas destacadas ni otros resultados iniciales.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.11 | LGBM")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.12 | LGBM")
