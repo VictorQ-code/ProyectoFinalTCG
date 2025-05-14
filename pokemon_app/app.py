@@ -53,16 +53,14 @@ PIPE_HIGH_LGBM_PATH = os.path.join(LGBM_MODELS_SUBDIR, PIPE_HIGH_PKL_FILENAME)
 THRESHOLD_LGBM_PATH = os.path.join(LGBM_MODELS_SUBDIR, THRESHOLD_JSON_FILENAME)
 
 # --- CONFIGURACIÓN DEL MODELO MLP ---
-# MLP espera 'name' y 'artist' para sus features categóricas
 _MLP_NUM_COLS = ['price_t0_log', 'days_diff']
-_MLP_CAT_COLS = ['artist', 'name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes'] # <--- CAMBIADO
+_MLP_CAT_COLS = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
 _MLP_INPUT_KEY = 'inputs'
 _MLP_OUTPUT_KEY = 'output_0'
 _MLP_TARGET_LOG = True
 _MLP_DAYS_DIFF = 29.0
 
 # --- CONFIGURACIÓN DE PIPELINES LGBM ---
-# LGBM espera 'pokemon_name' y 'artist_name'
 _LGBM_NUM_FEATURES_INPUT = ['prev_price', 'days_since_prev_snapshot', 'cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
 _LGBM_CAT_FEATURES_INPUT = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
 _LGBM_ALL_FEATURES_APP = _LGBM_NUM_FEATURES_INPUT + _LGBM_CAT_FEATURES_INPUT
@@ -91,13 +89,12 @@ bq_client = connect_to_bigquery()
 if bq_client is None: st.stop()
 
 # --- FUNCIONES DE CARGA DE ARTEFACTOS ---
-# (load_tf_model_as_layer, load_sklearn_pipeline, load_joblib_preprocessor, load_json_config sin cambios)
-# ... (Pega aquí las definiciones de estas 4 funciones de carga de la v1.19/v1.20)
+# (Pega aquí las definiciones de load_tf_model_as_layer, load_sklearn_pipeline, load_joblib_preprocessor, load_json_config de la v1.22)
+# ...
 
 # --- Carga de TODOS los Modelos y Preprocesadores ---
-# ... (Pega aquí la carga de todos los modelos de la v1.19/v1.20)
+# ... (Pega aquí la carga de todos los modelos de la v1.22) ...
 
-# --- FUNCIONES UTILITARIAS DE DATOS ---
 # --- FUNCIONES UTILITARIAS DE DATOS ---
 @st.cache_data(ttl=3600)
 def get_latest_snapshot_info(_client: bigquery.Client) -> tuple[str | None, pd.Timestamp | None]:
@@ -112,48 +109,13 @@ def get_latest_snapshot_info(_client: bigquery.Client) -> tuple[str | None, pd.T
             logger.info(f"SNAPSHOT_INFO: Usando tabla: {full_table_path}, Fecha Snapshot: {snapshot_date.date()}")
             return full_table_path, snapshot_date
         logger.warning("SNAPSHOT_TABLE: No se encontraron tablas snapshot 'monthly_...'.")
-        return None, None # Correcto: devuelve tupla si no hay resultados
+        return None, None # Asegurar que devuelve tupla
     except Exception as e:
-        logger.error(f"SNAPSHOT_TABLE: Error buscando tabla snapshot: {e}", exc_info=True)
-        st.error(f"Error crítico al obtener información del último snapshot: {e}") # Informar al usuario
-        return None, None # <-- AÑADIR ESTE RETURN PARA MANEJAR LA EXCEPCIÓN
+        logger.error(f"SNAPSHOT_TABLE: Error: {e}", exc_info=True)
+        st.error(f"Error crítico al obtener información del último snapshot: {e}")
+        return None, None # Asegurar que devuelve tupla
 
-POKEMON_SUFFIXES_TO_REMOVE = [' VMAX', ' VSTAR', ' V-UNION', ' V', ' GX', ' EX', ' BREAK', ' Prism Star', ' Star', ' Radiant', ' δ', ' Tag Team', ' & ', ' Light', ' Dark', ' ◇', ' ☆']
-MULTI_WORD_BASE_NAMES = ["Mr. Mime", "Mime Jr.", "Farfetch'd", "Sirfetch'd", "Ho-Oh", "Porygon-Z", "Type: Null", "Tapu Koko", "Tapu Lele", "Tapu Bulu", "Tapu Fini", "Mr. Rime", "Indeedee M", "Indeedee F", "Great Tusk", "Iron Treads"]
-
-def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
-    # ... (código sin cambios)
-    pass # Implementación de v1.19
-
-@st.cache_data(ttl=3600)
-def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
-    # Seleccionar 'name' y 'artist' y también crear los alias 'pokemon_name' y 'artist_name'
-    query = f"""
-    SELECT
-        id, name, name AS pokemon_name, -- Tener AMBOS: 'name' y 'pokemon_name' (alias)
-        supertype, subtypes, types,
-        rarity, set_id, set_name,
-        artist, artist AS artist_name, -- Tener AMBOS: 'artist' y 'artist_name' (alias)
-        images_large AS image_url,
-        cardmarket_url, tcgplayer_url
-    FROM `{CARD_METADATA_TABLE}`
-    """
-    logger.info(f"METADATA_BQ: Ejecutando query para metadatos: {query[:100]}...")
-    try:
-        df = _client.query(query).to_dataframe()
-        if df.empty: logger.warning("METADATA_BQ: DataFrame de metadatos vacío."); st.warning("No se pudo cargar metadatos."); return pd.DataFrame()
-        expected_cols_meta = ['name', 'pokemon_name', 'artist', 'artist_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes', 'cardmarket_url', 'tcgplayer_url', 'image_url']
-        for col in expected_cols_meta:
-            if col not in df.columns:
-                df[col] = 'Unknown_Placeholder' if col not in ['cardmarket_url', 'tcgplayer_url', 'image_url'] else None
-                logger.error(f"METADATA_BQ: Columna '{col}' no encontrada/creada en metadatos. Placeholder añadido.")
-        df['base_pokemon_name_display'] = df.apply(lambda row: get_true_base_name(row['name'], row['supertype'], POKEMON_SUFFIXES_TO_REMOVE, MULTI_WORD_BASE_NAMES), axis=1)
-        logger.info(f"METADATA_BQ: Metadatos cargados y procesados. Total filas: {len(df)}.")
-        return df
-    except Exception as e:
-        if "db-dtypes" in str(e).lower(): logger.error("METADATA_BQ: Error de 'db-dtypes'.", exc_info=True); st.error("Error de Dependencia: Falta 'db-dtypes'.")
-        else: logger.error(f"METADATA_BQ: Error al cargar metadatos de BigQuery: {e}", exc_info=True); st.error(f"Error al cargar metadatos de cartas: {e}.")
-        return pd.DataFrame()
+# ... (Pega aquí get_true_base_name y get_card_metadata_with_base_names de v1.22) ...
 
 @st.cache_data(ttl=600)
 def fetch_card_data_from_bq(
@@ -161,14 +123,17 @@ def fetch_card_data_from_bq(
     supertype_ui_filter: str | None, sets_ui_filter: list, names_ui_filter: list, rarities_ui_filter: list,
     sort_direction: str, full_metadata_df_param: pd.DataFrame
 ) -> pd.DataFrame:
-    # ... (Lógica de pre-filtrado de IDs igual) ...
     logger.info(f"FETCH_BQ_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
-    if not latest_table_path_param: logger.error("FETCH_BQ_DATA_FAIL: 'latest_table_path_param' es None."); st.error("Error Interno: No se pudo determinar la tabla de precios."); return pd.DataFrame()
-    ids_to_query_df = full_metadata_df_param.copy() # full_metadata_df_param ahora tiene 'name', 'artist', 'pokemon_name', 'artist_name'
+    if not latest_table_path_param:
+        logger.error("FETCH_BQ_DATA_FAIL: 'latest_table_path_param' es None.")
+        st.error("Error Interno: No se pudo determinar la tabla de precios.")
+        return pd.DataFrame() # Devolver DataFrame vacío
+    # ... (resto de la lógica de pre-filtrado de IDs sin cambios) ...
+    ids_to_query_df = full_metadata_df_param.copy()
     if supertype_ui_filter and supertype_ui_filter != "Todos": ids_to_query_df = ids_to_query_df[ids_to_query_df['supertype'] == supertype_ui_filter]
     if sets_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['set_name'].isin(sets_ui_filter)]
     if rarities_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['rarity'].isin(rarities_ui_filter)]
-    if names_ui_filter: # El filtro de UI usa 'name' o 'base_pokemon_name_display'
+    if names_ui_filter:
         name_col_to_use_for_filter = 'base_pokemon_name_display' if supertype_ui_filter == 'Pokémon' and 'base_pokemon_name_display' in ids_to_query_df.columns else 'name'
         if name_col_to_use_for_filter in ids_to_query_df.columns: ids_to_query_df = ids_to_query_df[ids_to_query_df[name_col_to_use_for_filter].isin(names_ui_filter)]
     if ids_to_query_df.empty: logger.info("FETCH_BQ_DATA: No hay IDs que coincidan."); return pd.DataFrame()
@@ -176,7 +141,6 @@ def fetch_card_data_from_bq(
     if not list_of_card_ids_to_query: logger.info("FETCH_BQ_DATA: Lista IDs vacía."); return pd.DataFrame()
 
     snapshot_date_str_for_query = snapshot_date_param.strftime('%Y-%m-%d')
-    # Query SQL: seleccionar meta.name, meta.artist y también crear alias pokemon_name y artist_name
     query_sql_template = f"""
     SELECT
         meta.id,
@@ -203,132 +167,38 @@ def fetch_card_data_from_bq(
     WHERE meta.id IN UNNEST(@card_ids_param)
     ORDER BY prices.cm_averageSellPrice {sort_direction}
     """
-    # ... (resto de fetch_card_data_from_bq sin cambios)
-    pass # Implementación de v1.19
-
+    query_params_bq = [bigquery.ArrayQueryParameter("card_ids_param", "STRING", list_of_card_ids_to_query)]
+    job_config_bq = bigquery.QueryJobConfig(query_parameters=query_params_bq)
+    logger.info(f"FETCH_BQ_DATA: SQL BQ para {len(list_of_card_ids_to_query)} IDs. Orden: {sort_direction}")
+    try:
+        results_from_bq_df = _client.query(query_sql_template, job_config=job_config_bq).to_dataframe()
+        price_cols_to_convert = ['price', 'cm_trendPrice', 'cm_avg1', 'cm_avg7', 'cm_avg30']
+        for pcol in price_cols_to_convert:
+            if pcol in results_from_bq_df.columns:
+                 results_from_bq_df[pcol] = pd.to_numeric(results_from_bq_df[pcol], errors='coerce')
+        results_from_bq_df['days_since_prev_snapshot'] = 30.0
+        logger.info("FETCH_BQ_DATA: Añadida columna 'days_since_prev_snapshot'.")
+        logger.info(f"FETCH_BQ_DATA: Consulta a BQ OK. Filas: {len(results_from_bq_df)}.")
+        logger.debug(f"FETCH_BQ_DATA: Columnas en results_df: {results_from_bq_df.columns.tolist()}")
+        return results_from_bq_df
+    except Exception as e:
+        if "db-dtypes" in str(e).lower(): logger.error("FETCH_BQ_DATA_FAIL: Error de 'db-dtypes'.", exc_info=True); st.error("Error de Dependencia: Falta 'db-dtypes'.")
+        else: logger.error(f"FETCH_BQ_DATA_FAIL: Error BQ: {e}", exc_info=True); st.error(f"Error al obtener datos de cartas: {e}.")
+        return pd.DataFrame() # <-- ASEGURAR DEVOLVER DataFrame VACÍO
 
 # --- FUNCIONES DE PREDICCIÓN ---
-# MLP
-def predict_price_with_mlp( # Renombrado para claridad
-    model_layer: tf.keras.layers.TFSMLayer, ohe_mlp: typing.Any, scaler_mlp: typing.Any,
-    card_data_series: pd.Series # Espera 'artist' y 'name' para mapear a 'artist_name' y 'pokemon_name'
-) -> float | None:
-    logger.info(f"PREDICT_MLP: Iniciando para ID: {card_data_series.get('id', 'N/A')}")
-    if not model_layer or not ohe_mlp or not scaler_mlp: return None
-    try:
-        data_dict = {}
-        price_val = card_data_series.get('price')
-        data_dict['price_t0_log'] = np.log1p(price_val) if pd.notna(price_val) and price_val > 0 else np.log1p(0)
-        data_dict['days_diff'] = float(_MLP_DAYS_DIFF)
-
-        # El OHE del MLP espera columnas según _MLP_CAT_COLS
-        # Mapear de los nombres de columna de card_data_series a los nombres que espera el OHE del MLP
-        data_dict['artist_name'] = str(card_data_series.get('artist', 'Unknown_Artist')) # 'artist' de card_data_series -> 'artist_name' para el OHE MLP
-        data_dict['pokemon_name'] = str(card_data_series.get('name', 'Unknown_Pokemon')) # 'name' de card_data_series -> 'pokemon_name' para el OHE MLP
-        data_dict['rarity'] = str(card_data_series.get('rarity', 'Unknown_Rarity'))
-        data_dict['set_name'] = str(card_data_series.get('set_name', 'Unknown_Set'))
-        data_dict['supertype'] = str(card_data_series.get('supertype', 'Unknown_Supertype'))
-
-        types_val = card_data_series.get('types')
-        if isinstance(types_val, list) and types_val: data_dict['types'] = str(types_val[0]) if pd.notna(types_val[0]) else 'Unknown_Type'
-        elif pd.notna(types_val): data_dict['types'] = str(types_val)
-        else: data_dict['types'] = 'Unknown_Type'
-
-        subtypes_val = card_data_series.get('subtypes')
-        if isinstance(subtypes_val, list) and subtypes_val: cleaned = [str(s) for s in subtypes_val if pd.notna(s)]; data_dict['subtypes'] = ', '.join(sorted(list(set(cleaned)))) if cleaned else 'None'
-        elif pd.notna(subtypes_val): data_dict['subtypes'] = str(subtypes_val)
-        else: data_dict['subtypes'] = 'None'
-
-        df_prep = pd.DataFrame([data_dict])
-        # Asegurar que el orden de las columnas coincida con _MLP_NUM_COLS + _MLP_CAT_COLS
-        ordered_cols_for_mlp = _MLP_NUM_COLS + _MLP_CAT_COLS
-        try: df_prep = df_prep[ordered_cols_for_mlp]
-        except KeyError as e_key_mlp:
-            missing_keys_mlp = [col for col in ordered_cols_for_mlp if col not in df_prep.columns]
-            logger.error(f"PREDICT_MLP_ORDER_FAIL: Faltan columnas para MLP: {missing_keys_mlp}. Error: {e_key_mlp}")
-            return None
-
-        num_feat = scaler_mlp.transform(df_prep[_MLP_NUM_COLS].fillna(0))
-        cat_feat = mlp_ohe.transform(df_prep[_MLP_CAT_COLS].astype(str)) # OHE del MLP
-        X_final = np.concatenate([num_feat, cat_feat], axis=1)
-
-        EXPECTED_MLP_FEATURES = 4865
-        if X_final.shape[1] != EXPECTED_MLP_FEATURES:
-            logger.error(f"MLP SHAPE MISMATCH! Expected {EXPECTED_MLP_FEATURES}, got {X_final.shape[1]}")
-            return None
-        
-        pred_raw = model_layer(**{_MLP_INPUT_KEY: tf.convert_to_tensor(X_final, dtype=tf.float32)})
-        pred_tensor = pred_raw[_MLP_OUTPUT_KEY]
-        pred_numeric = pred_tensor.numpy()[0][0]
-        return np.expm1(pred_numeric) if _MLP_TARGET_LOG else pred_numeric
-    except Exception as e: logger.error(f"PREDICT_MLP_EXC: {e}", exc_info=True); return None
-
-# LightGBM
-def predict_price_with_lgbm_pipelines_app(
-    pipe_low_lgbm_loaded, pipe_high_lgbm_loaded, threshold_value: float,
-    card_data_series: pd.Series # Espera 'artist_name' y 'pokemon_name' directamente si así se definen en _LGBM_CAT_FEATURES_INPUT
-) -> tuple[float | None, str | None]:
-    logger.info(f"LGBM_PRED_APP: Iniciando predicción para carta ID: {card_data_series.get('id', 'N/A')}")
-    model_type_used = "N/A"
-    if not pipe_low_lgbm_loaded or not pipe_high_lgbm_loaded:
-        logger.error("LGBM_PRED_APP: Uno o ambos pipelines LGBM no cargados.")
-        return None, model_type_used
-    try:
-        input_dict = {}
-        # Construir input_dict. _LGBM_ALL_FEATURES_APP usa 'pokemon_name' y 'artist_name'
-        for col_name in _LGBM_ALL_FEATURES_APP:
-            # card_data_series ya tiene 'pokemon_name' y 'artist_name' gracias a la query
-            if col_name == 'prev_price': val = card_data_series.get('price')
-            elif col_name == 'days_since_prev_snapshot': val = card_data_series.get('days_since_prev_snapshot', 30.0)
-            else: val = card_data_series.get(col_name) # Para todas las demás (cm_avgX, y las categóricas)
-
-            if col_name in _LGBM_NUM_FEATURES_INPUT:
-                input_dict[col_name] = float(val) if pd.notna(val) else 0.0
-                if pd.isna(val): logger.warning(f"LGBM_PRED_APP: Feature numérica '{col_name}' es NaN. Usando 0.0.")
-            elif col_name in _LGBM_CAT_FEATURES_INPUT:
-                # El mapeo de tipos y subtipos ya se hace, solo asegurar string y placeholder
-                if col_name == 'types':
-                    if isinstance(val, list) and val: input_dict[col_name] = str(val[0]) if pd.notna(val[0]) else 'Unknown_Type'
-                    elif pd.notna(val): input_dict[col_name] = str(val)
-                    else: input_dict[col_name] = 'Unknown_Type'
-                elif col_name == 'subtypes':
-                    if isinstance(val, list) and val: cleaned_subtypes = [str(s) for s in val if pd.notna(s)]; input_dict[col_name] = ', '.join(sorted(list(set(cleaned_subtypes)))) if cleaned_subtypes else 'None'
-                    elif pd.notna(val): input_dict[col_name] = str(val)
-                    else: input_dict[col_name] = 'None'
-                else: # Para artist_name, pokemon_name, rarity, set_name, supertype
-                     input_dict[col_name] = str(val) if pd.notna(val) else f'Unknown_{col_name.replace("_name","").capitalize()}'
-        
-        X_new_predict_df = pd.DataFrame([input_dict])
-        missing_cols = [col for col in _LGBM_ALL_FEATURES_APP if col not in X_new_predict_df.columns]
-        if missing_cols: logger.error(f"LGBM_PRED_APP: Faltan cols: {missing_cols}"); return None, model_type_used
-        X_new_predict_for_pipe = X_new_predict_df[_LGBM_ALL_FEATURES_APP]
-
-        threshold_feature_value = X_new_predict_for_pipe.loc[0, _LGBM_THRESHOLD_COLUMN_APP]
-        if pd.isna(threshold_feature_value): threshold_feature_value = threshold_value - 1
-        
-        active_pipe = pipe_low_lgbm_app if threshold_feature_value < threshold_value else pipe_high_lgbm_app
-        model_type_used = "Bajo Precio" if threshold_feature_value < threshold_value else "Alto Precio"
-        logger.info(f"LGBM_PRED_APP: Usando pipeline de {model_type_used} basado en {_LGBM_THRESHOLD_COLUMN_APP}={threshold_feature_value}")
-        
-        pred_log = active_pipe.predict(X_new_predict_for_pipe)
-        prediction_final = np.expm1(pred_log[0]) if _LGBM_TARGET_IS_LOG_TRANSFORMED else pred_log[0]
-        logger.info(f"LGBM_PRED_APP: Predicción (escala original): {prediction_final:.2f}€")
-        return float(prediction_final), model_type_used
-    except KeyError as e_key: logger.error(f"LGBM_PRED_APP: KeyError: {e_key}", exc_info=True); st.error(f"Error Datos: Falta '{e_key}'."); return None, model_type_used
-    except Exception as e: logger.error(f"LGBM_PRED_APP_EXC: Excepción: {e}", exc_info=True); st.error(f"Error Predicción LGBM: {e}"); return None, model_type_used
-
+# ... (Pega aquí las definiciones de predict_price_with_mlp y predict_price_with_lgbm_pipelines_app de la v1.22)
 
 # --- Carga de Datos Inicial de BigQuery ---
 logger.info("APP_INIT: Cargando datos iniciales de BigQuery.")
 LATEST_SNAPSHOT_TABLE_PATH, LATEST_SNAPSHOT_DATE = get_latest_snapshot_info(bq_client)
-all_card_metadata_df = get_card_metadata_with_base_names(bq_client) # Ahora tiene 'name', 'artist', Y TAMBIÉN 'pokemon_name', 'artist_name' como alias
+all_card_metadata_df = get_card_metadata_with_base_names(bq_client)
 
 if not LATEST_SNAPSHOT_TABLE_PATH or LATEST_SNAPSHOT_DATE is None or all_card_metadata_df.empty:
     logger.critical("APP_INIT_FAIL: Datos esenciales de BigQuery no cargados.")
     st.error("Error Crítico: No se pudieron cargar los datos esenciales de BigQuery.")
     st.stop()
 logger.info("APP_INIT: Datos iniciales de BigQuery cargados OK.")
-
 
 # --- Sidebar y Filtros ---
 st.sidebar.header("Filtros y Opciones")
