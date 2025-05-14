@@ -555,6 +555,10 @@ if st.session_state.selected_card_id_from_grid is not None:
             if pipe_low_lgbm_app and pipe_high_lgbm_app and threshold_lgbm_app is not None:
                 required_lgbm_cols_for_pred_button = ['precio', _LGBM_THRESHOLD_COLUMN_APP] + _LGBM_ALL_FEATURES_APP
                 required_lgbm_cols_for_pred_button = list(set(required_lgbm_cols_for_pred_button))
+
+                logger.debug(f"LGBM_BTN_CHECK: Datos de la carta para botón: {card_to_display_in_detail_section.to_dict()}")
+                logger.debug(f"LGBM_BTN_CHECK: Columnas requeridas para botón: {required_lgbm_cols_for_pred_button}")
+                
                 can_predict_lgbm = all(col in card_to_display_in_detail_section and pd.notna(card_to_display_in_detail_section.get(col)) for col in required_lgbm_cols_for_pred_button)
                 
                 if can_predict_lgbm:
