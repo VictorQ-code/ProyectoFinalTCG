@@ -213,24 +213,24 @@ def fetch_card_data_from_bq(
     query_sql_template = f"""
     SELECT
         meta.id,
-        meta.pokemon_name,          -- Viene de meta (name AS pokemon_name)
+        meta.name AS pokemon_name,         -- CORRECCIÓN: Usar meta.name y darle alias
         meta.supertype,
         meta.subtypes,
         meta.types,
         meta.set_name,
         meta.rarity,
-        meta.artist_name,           -- Viene de meta (artist AS artist_name)
+        meta.artist AS artist_name,        -- CORRECCIÓN: Usar meta.artist y darle alias
         meta.images_large AS image_url,
         meta.cardmarket_url,
         meta.tcgplayer_url,
-        prices.cm_averageSellPrice AS precio, -- Nombre de columna real en tabla 'prices'
+        prices.cm_averageSellPrice AS precio,
         prices.cm_trendPrice,
         prices.cm_avg1,
         prices.cm_avg7,
         prices.cm_avg30,
         PARSE_DATE('%Y_%m_%d', prices._TABLE_SUFFIX) AS fecha_snapshot
     FROM `{CARD_METADATA_TABLE}` AS meta
-    LEFT JOIN `{latest_table_path}` AS prices ON meta.id = prices.id -- CORREGIDO
+    LEFT JOIN `{latest_table_path}` AS prices ON meta.id = prices.id
     WHERE meta.id IN UNNEST(@card_ids_param)
     ORDER BY prices.cm_averageSellPrice {sort_direction}
     """
