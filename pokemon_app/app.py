@@ -7,7 +7,7 @@ import logging
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import numpy as np
 import os
-# import tensorflow as tf # Descomentar si vuelves a usar el modelo MLP de TF
+# import tensorflow as tf
 import joblib
 import typing
 import random
@@ -150,22 +150,33 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
 
 @st.cache_data(ttl=3600)
 def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
+    # Query para metadatos, usando nombres de columna reales de BQ y aplicando alias
     query = f"""
     SELECT
-        id, name AS pokemon_name, supertype, subtypes, types,
-        rarity, set_name, artist AS artist_name,
-        images_large AS image_url, cardmarket_url, tcgplayer_url
+        id,
+        name         AS pokemon_name, -- Nombre real 'name', alias 'pokemon_name'
+        supertype,
+        subtypes,
+        types,
+        rarity,
+        set_name,
+        artist       AS artist_name,  -- Nombre real 'artist', alias 'artist_name'
+        images_large AS image_url,
+        cardmarket_url,
+        tcgplayer_url
     FROM `{CARD_METADATA_TABLE}`
     """
     logger.info(f"METADATA_BQ: Ejecutando query para metadatos: {query[:100]}...")
     try:
         df = _client.query(query).to_dataframe()
         if df.empty: logger.warning("METADATA_BQ: DataFrame de metadatos vacío."); st.warning("No se pudo cargar metadatos."); return pd.DataFrame()
-        expected_cols_meta = _LGBM_CATEGORICAL_FEATURES_APP + ['cardmarket_url', 'tcgplayer_url', 'image_url']
+        # Verificar las columnas con ALIAS
+        expected_cols_meta = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes', 'cardmarket_url', 'tcgplayer_url', 'image_url']
         for col in expected_cols_meta:
             if col not in df.columns:
+                # Esto no debería suceder si los alias en la query son correctos
                 df[col] = 'Unknown_Placeholder' if col not in ['cardmarket_url', 'tcgplayer_url', 'image_url'] else None
-                logger.warning(f"METADATA_BQ: Columna '{col}' no en metadatos, añadida con placeholder/None.")
+                logger.error(f"METADATA_BQ: Columna con alias '{col}' no se generó correctamente en el DataFrame de metadatos.")
         df['base_pokemon_name_display'] = df.apply(lambda row: get_true_base_name(row['pokemon_name'], row['supertype'], POKEMON_SUFFIXES_TO_REMOVE, MULTI_WORD_BASE_NAMES), axis=1)
         logger.info(f"METADATA_BQ: Metadatos cargados y procesados. Total filas: {len(df)}.")
         return df
@@ -179,11 +190,11 @@ def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
 def fetch_card_data_from_bq(
     _client: bigquery.Client, latest_table_path_param: str, snapshot_date_param: pd.Timestamp,
     supertype_ui_filter: str | None, sets_ui_filter: list, names_ui_filter: list, rarities_ui_filter: list,
-    sort_direction: str, full_metadata_df_param: pd.DataFrame
+    sort_direction: str, full_metadata_df_param: pd.DataFrame # Este es all_card_metadata_df
 ) -> pd.DataFrame:
     logger.info(f"FETCH_BQ_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
     
-    ids_to_query_df = full_metadata_df_param.copy()
+    ids_to_query_df = full_metadata_df_param.copy() # full_metadata_df_param ya tiene pokemon_name, artist_name
     if supertype_ui_filter and supertype_ui_filter != "Todos": ids_to_query_df = ids_to_query_df[ids_to_query_df['supertype'] == supertype_ui_filter]
     if sets_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['set_name'].isin(sets_ui_filter)]
     if rarities_ui_filter: ids_to_query_df = ids_to_query_df[ids_to_query_df['rarity'].isin(rarities_ui_filter)]
@@ -196,16 +207,28 @@ def fetch_card_data_from_bq(
     if not list_of_card_ids_to_query: logger.info("FETCH_BQ_DATA: Lista IDs vacía."); return pd.DataFrame()
 
     snapshot_date_str_for_query = snapshot_date_param.strftime('%Y-%m-%d')
+    # Query SQL CORREGIDA: usa nombres reales de BQ para 'meta' y alias si es necesario
     query_sql_template = f"""
     SELECT
-        meta.id, meta.pokemon_name, meta.supertype, meta.subtypes, meta.types,
-        meta.set_name, meta.rarity, meta.artist_name, meta.image_url,
-        meta.cardmarket_url, meta.tcgplayer_url,
-        prices.cm_averageSellPrice AS precio, prices.cm_trendPrice,
-        prices.cm_avg1, prices.cm_avg7, prices.cm_avg30,
+        meta.id,
+        meta.name AS pokemon_name,         -- De CARD_METADATA_TABLE (alias meta)
+        meta.supertype,
+        meta.subtypes,
+        meta.types,
+        meta.set_name,
+        meta.rarity,
+        meta.artist AS artist_name,        -- De CARD_METADATA_TABLE (alias meta)
+        meta.images_large AS image_url,
+        meta.cardmarket_url,
+        meta.tcgplayer_url,
+        prices.cm_averageSellPrice AS precio, -- Nombre de columna real en tabla prices
+        prices.cm_trendPrice,
+        prices.cm_avg1,
+        prices.cm_avg7,
+        prices.cm_avg30,
         DATE('{snapshot_date_str_for_query}') AS fecha_snapshot
     FROM `{CARD_METADATA_TABLE}` AS meta
-    LEFT JOIN `{latest_table_path_param}` AS prices ON meta.id = prices.id
+    LEFT JOIN `{latest_table_path_param}` AS prices ON meta.id = prices.id -- Asume que 'id' es la clave en ambas
     WHERE meta.id IN UNNEST(@card_ids_param)
     ORDER BY prices.cm_averageSellPrice {sort_direction}
     """
@@ -231,6 +254,7 @@ def predict_price_with_lgbm_pipelines_app(
     pipe_low_lgbm_loaded, pipe_high_lgbm_loaded, threshold_lgbm_value: float,
     card_data_for_prediction: pd.Series
 ) -> tuple[float | None, str | None]:
+    # ... (código de la función sin cambios, ya es robusta) ...
     logger.info(f"LGBM_PRED_APP: Iniciando predicción para carta ID: {card_data_for_prediction.get('id', 'N/A')}")
     model_type_used = None
     if not pipe_low_lgbm_loaded or not pipe_high_lgbm_loaded or threshold_lgbm_value is None:
@@ -345,7 +369,7 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
     if not special_illustration_rares.empty:
         num_cards_to_show = min(len(special_illustration_rares), NUM_FEATURED_CARDS_TO_DISPLAY)
         if len(special_illustration_rares) > 0 and num_cards_to_show > 0 :
-             display_cards_df = special_illustration_rares.sample(n=num_cards_to_show, random_state=None).reset_index(drop=True) # random_state=None para aleatoriedad
+             display_cards_df = special_illustration_rares.sample(n=num_cards_to_show, random_state=None).reset_index(drop=True)
         else: display_cards_df = pd.DataFrame()
         if not display_cards_df.empty:
              cols = st.columns(num_cards_to_show)
@@ -364,8 +388,8 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
 elif not is_initial_unfiltered_load:
     st.header("Resultados de Cartas")
     results_df_for_aggrid_display = results_df
-    if len(results_df) > MAX_ROWS_NO_FILTER: # No es necesario is_initial_unfiltered_load aquí si el bloque ya es para cuando NO es carga inicial
-        st.info(f"Mostrando los primeros {MAX_ROWS_NO_FILTER} de {len(results_df)} resultados. Aplica filtros más específicos si es necesario.")
+    if len(results_df) > MAX_ROWS_NO_FILTER : # Quitar 'and is_initial_unfiltered_load' de aquí
+        st.info(f"Mostrando los primeros {MAX_ROWS_NO_FILTER} de {len(results_df)} resultados. Aplica filtros.")
         results_df_for_aggrid_display = results_df.head(MAX_ROWS_NO_FILTER)
     if not results_df_for_aggrid_display.empty:
         display_columns_mapping = {'id': 'ID', 'pokemon_name': 'Nombre Carta', 'supertype': 'Categoría', 'set_name': 'Set', 'rarity': 'Rareza', 'artist_name': 'Artista', 'precio': 'Precio (€)'}
@@ -393,7 +417,7 @@ elif not is_initial_unfiltered_load:
                             st.session_state.selected_card_id_from_grid = newly_selected_id
                             st.rerun()
                 except Exception as e_ag: logger.error(f"AGGRID_HANDLER_ERR: {e_ag}", exc_info=True)
-            elif isinstance(selected_rows_data, pd.DataFrame) and not selected_rows_data.empty: # Fallback por si devuelve DF
+            elif isinstance(selected_rows_data, pd.DataFrame) and not selected_rows_data.empty:
                 try:
                     newly_selected_id = selected_rows_data.iloc[0]['ID']
                     current_id = st.session_state.get('selected_card_id_from_grid')
@@ -447,15 +471,13 @@ if st.session_state.selected_card_id_from_grid is not None:
             
             # Botón de Predicción LGBM
             if pipe_low_lgbm_app and pipe_high_lgbm_app and threshold_lgbm_app is not None:
-                # Verificar si TODAS las columnas necesarias para la predicción LGBM están presentes Y no son NaN
-                # en la carta seleccionada para el detalle.
-                required_lgbm_cols_for_pred_button = ['precio', _LGBM_THRESHOLD_COLUMN_APP] + _LGBM_ALL_FEATURES_APP
-                required_lgbm_cols_for_pred_button = list(set(required_lgbm_cols_for_pred_button)) # Eliminar duplicados
+                # Columnas que DEBEN estar en card_to_display_in_detail_section y NO ser NaN para que el botón aparezca
+                required_cols_for_lgbm_button = ['precio', _LGBM_THRESHOLD_COLUMN_APP] + _LGBM_ALL_FEATURES_APP
+                required_cols_for_lgbm_button = list(set(required_cols_for_lgbm_button))
                 
-                # Verificar que card_to_display_in_detail_section (que es una Series) tenga estos índices
                 can_predict_lgbm = all(
                     col in card_to_display_in_detail_section.index and \
-                    pd.notna(card_to_display_in_detail_section.get(col)) for col in required_lgbm_cols_for_pred_button
+                    pd.notna(card_to_display_in_detail_section.get(col)) for col in required_cols_for_lgbm_button
                 )
                 
                 if can_predict_lgbm:
@@ -474,7 +496,7 @@ if st.session_state.selected_card_id_from_grid is not None:
                          else: st.warning("No se pudo obtener estimación (LGBM).")
                 else:
                      missing_pred_cols = [col for col in required_lgbm_cols_for_pred_button if col not in card_to_display_in_detail_section.index or pd.isna(card_to_display_in_detail_section.get(col))]
-                     st.info(f"Datos insuficientes para estimación LGBM (faltan o son NaN: {missing_pred_cols}).")
+                     st.info(f"Datos insuficientes para estimación LGBM (faltan o son NaN: {', '.join(missing_pred_cols)}).")
             else: st.caption("Modelos LGBM o umbral no disponibles.")
 else:
     if results_df.empty and not is_initial_unfiltered_load: st.info("No se encontraron cartas con los filtros seleccionados.")
@@ -483,4 +505,4 @@ else:
         else: st.info("No se encontraron cartas destacadas ni otros resultados iniciales.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.14 | LGBM Focus")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.15 | LGBM")
