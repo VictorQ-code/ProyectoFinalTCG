@@ -7,7 +7,7 @@ import logging
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import numpy as np
 import os
-# import tensorflow as tf # Comentado porque estamos usando LGBM
+import tensorflow as tf # Re-activado para el MLP
 import joblib
 import typing
 import random
@@ -21,8 +21,8 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
-# logger.info(f"TensorFlow Version: {tf.__version__}")
-# logger.info(f"Keras Version (via TF): {tf.keras.__version__}")
+logger.info(f"TensorFlow Version: {tf.__version__}")
+logger.info(f"Keras Version (via TF): {tf.keras.__version__}")
 
 
 # --- Constantes y Configuración de GCP ---
@@ -42,30 +42,52 @@ BIGQUERY_DATASET = "pokemon_dataset"
 CARD_METADATA_TABLE = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.card_metadata"
 MAX_ROWS_NO_FILTER = 200
 
-# --- RUTAS Y NOMBRES DE ARCHIVOS DEL MODELO (LGBM) ---
+# --- RUTAS Y NOMBRES DE ARCHIVOS DE MODELOS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_ARTIFACTS_DIR = os.path.join(BASE_DIR, "model_files")
+MODEL_FILES_DIR = os.path.join(BASE_DIR, "model_files")
 
-LGBM_MODELS_SUBDIR = os.path.join(MODEL_ARTIFACTS_DIR, "lgbm_models") # Subdirectorio para modelos LGBM
+# MLP (Predicción Futura)
+MLP_ARTIFACTS_SUBDIR = "mlp_v1"
+MLP_SAVED_MODEL_PATH = os.path.join(MODEL_FILES_DIR, MLP_ARTIFACTS_SUBDIR)
+MLP_OHE_PKL_FILENAME = "ohe_mlp_cat.pkl"
+MLP_SCALER_PKL_FILENAME = "scaler_mlp_num.pkl"
+MLP_OHE_PATH = os.path.join(MLP_SAVED_MODEL_PATH, MLP_OHE_PKL_FILENAME)
+MLP_SCALER_PATH = os.path.join(MLP_SAVED_MODEL_PATH, MLP_SCALER_PKL_FILENAME)
+
+# LightGBM Pipelines (Precio Justo)
+LGBM_MODELS_SUBDIR = os.path.join(MODEL_FILES_DIR, "lgbm_models")
 PIPE_LOW_PKL_FILENAME = "modelo_pipe_low.pkl"
 PIPE_HIGH_PKL_FILENAME = "modelo_pipe_high.pkl"
 THRESHOLD_JSON_FILENAME = "threshold.json"
-
 PIPE_LOW_LGBM_PATH = os.path.join(LGBM_MODELS_SUBDIR, PIPE_LOW_PKL_FILENAME)
 PIPE_HIGH_LGBM_PATH = os.path.join(LGBM_MODELS_SUBDIR, PIPE_HIGH_PKL_FILENAME)
 THRESHOLD_LGBM_PATH = os.path.join(LGBM_MODELS_SUBDIR, THRESHOLD_JSON_FILENAME)
 
 
-# --- CONFIGURACIÓN DE FEATURES PARA LGBM (Debe coincidir con el entrenamiento LGBM) ---
-_LGBM_NUMERIC_FEATURES_APP = ['prev_price', 'days_since_prev_snapshot', 'cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
-_LGBM_CATEGORICAL_FEATURES_APP = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
-_LGBM_ALL_FEATURES_APP = _LGBM_NUMERIC_FEATURES_APP + _LGBM_CATEGORICAL_FEATURES_APP
+# --- CONFIGURACIÓN DEL MODELO MLP ---
+_MLP_NUM_COLS = ['price_t0_log', 'days_diff']
+_MLP_CAT_COLS = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
+_MLP_INPUT_KEY = 'inputs'
+_MLP_OUTPUT_KEY = 'output_0'
+_MLP_TARGET_LOG = True
+_MLP_DAYS_DIFF = 29.0
+
+# --- CONFIGURACIÓN DE PIPELINES LGBM ---
+_LGBM_NUM_FEATURES_INPUT = ['prev_price', 'days_since_prev_snapshot', 'cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
+_LGBM_CAT_FEATURES_INPUT = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
+_LGBM_ALL_FEATURES_APP = _LGBM_NUM_FEATURES_INPUT + _LGBM_CAT_FEATURES_INPUT
 _LGBM_THRESHOLD_COLUMN_APP = 'cm_avg7'
 _LGBM_TARGET_IS_LOG_TRANSFORMED = True
 
 # --- CONFIGURACIÓN PARA CARTAS DESTACADAS ---
 FEATURED_RARITY = 'Special Illustration Rare'
 NUM_FEATURED_CARDS_TO_DISPLAY = 5
+
+
+# --- INICIALIZAR SESSION STATE TEMPRANO ---
+if 'selected_card_id_from_grid' not in st.session_state:
+    st.session_state.selected_card_id_from_grid = None
+    logger.info("SESSION_STATE_INIT: 'selected_card_id_from_grid' inicializado a None (temprano).")
 
 
 # --- Conexión Segura a BigQuery ---
@@ -83,50 +105,90 @@ bq_client = connect_to_bigquery()
 if bq_client is None: st.stop()
 
 
-# --- FUNCIONES DE CARGA DE MODELOS Y PREPROCESADORES (LGBM) ---
+# --- FUNCIONES DE CARGA DE ARTEFACTOS ---
 @st.cache_resource
-def load_joblib_object(file_path, object_name="Objeto Joblib"):
-    if not os.path.exists(file_path):
-        logger.error(f"LOAD_JOBLIB: Archivo '{object_name}' no en: {file_path}")
-        st.error(f"Error Crítico: Archivo '{object_name}' no en '{file_path}'.")
+def load_tf_model_as_layer(model_path):
+    saved_model_pb_path = os.path.join(model_path, "saved_model.pb")
+    if not os.path.exists(saved_model_pb_path):
+        logger.error(f"LOAD_TF_LAYER: 'saved_model.pb' no encontrado en: {model_path}")
+        st.error(f"Error Crítico: 'saved_model.pb' no en '{model_path}'. Verifica MLP_SAVED_MODEL_PATH.")
         return None
     try:
-        loaded_object = joblib.load(file_path)
-        logger.info(f"LOAD_JOBLIB: {object_name} cargado desde: {file_path}")
-        return loaded_object
+        logger.info(f"LOAD_TF_LAYER: Cargando SavedModel como TFSMLayer desde: {model_path}")
+        model_obj = tf.keras.layers.TFSMLayer(model_path, call_endpoint='serving_default')
+        logger.info(f"LOAD_TF_LAYER: SavedModel cargado como TFSMLayer.")
+        try: logger.info(f"LOAD_TF_LAYER: Call Signature: {model_obj._call_signature}")
+        except AttributeError: logger.warning("LOAD_TF_LAYER: No se pudo acceder a '_call_signature'.")
+        return model_obj
     except Exception as e:
-        logger.error(f"LOAD_JOBLIB: Error cargando {object_name} desde {file_path}: {e}", exc_info=True)
-        st.error(f"Error Crítico al Cargar {object_name}: {e}")
+        logger.error(f"LOAD_TF_LAYER: Error crítico cargando SavedModel: {e}", exc_info=True)
+        st.error(f"Error Crítico al Cargar Modelo MLP: {e}.")
         return None
 
-@st.cache_data
-def load_threshold_from_json(file_path):
+@st.cache_resource
+def load_sklearn_pipeline(file_path, pipeline_name="Sklearn Pipeline"):
     if not os.path.exists(file_path):
-        logger.error(f"LOAD_THRESHOLD: Archivo de umbral no en: {file_path}")
-        st.error(f"Error Crítico: Archivo de umbral no en '{file_path}'.")
-        return 30.0
+        logger.warning(f"LOAD_SKL_PIPE: Archivo '{pipeline_name}' no encontrado en: {file_path}")
+        return None
     try:
-        with open(file_path, "r") as f: data = json.load(f)
-        threshold_value = data.get("threshold")
-        if threshold_value is None:
-            logger.error(f"LOAD_THRESHOLD: Clave 'threshold' no en {file_path}.")
-            st.error("Error Crítico: Formato incorrecto de archivo de umbral.")
-            return 30.0
-        logger.info(f"LOAD_THRESHOLD: Umbral {threshold_value} cargado desde: {file_path}")
-        return float(threshold_value)
-    except Exception as e: logger.error(f"LOAD_THRESHOLD: Error: {e}", exc_info=True); st.error(f"Error Cargar Umbral: {e}"); return 30.0
+        pipeline = joblib.load(file_path)
+        logger.info(f"LOAD_SKL_PIPE: {pipeline_name} cargado desde: {file_path}")
+        return pipeline
+    except Exception as e:
+        logger.error(f"LOAD_SKL_PIPE: Error crítico cargando {pipeline_name}: {e}", exc_info=True)
+        st.error(f"Error Crítico al Cargar Pipeline '{pipeline_name}': {e}")
+        return None
+
+@st.cache_resource
+def load_joblib_preprocessor(file_path, preprocessor_name="Preprocessor"):
+    if not os.path.exists(file_path):
+        logger.error(f"LOAD_PREPROC: Archivo '{preprocessor_name}' no encontrado en: {file_path}")
+        st.error(f"Error Crítico: Preprocesador '{preprocessor_name}' no en '{file_path}'.")
+        return None
+    try:
+        preprocessor = joblib.load(file_path)
+        logger.info(f"LOAD_PREPROC: {preprocessor_name} cargado desde: {file_path}")
+        return preprocessor
+    except Exception as e:
+        logger.error(f"LOAD_PREPROC: Error crítico cargando {preprocessor_name}: {e}", exc_info=True)
+        st.error(f"Error Crítico al Cargar Preprocesador '{preprocessor_name}': {e}")
+        return None
+
+@st.cache_data # Usar cache_data para JSON simple
+def load_json_config(file_path, config_name="JSON Config"):
+    if not os.path.exists(file_path):
+        logger.warning(f"LOAD_JSON: Archivo '{config_name}' no encontrado en: {file_path}")
+        return None # Devuelve None si no se encuentra para manejarlo explícitamente
+    try:
+        with open(file_path, 'r') as f: config = json.load(f)
+        logger.info(f"LOAD_JSON: {config_name} cargado desde: {file_path}")
+        return config
+    except Exception as e:
+        logger.error(f"LOAD_JSON: Error crítico cargando {config_name}: {e}", exc_info=True)
+        st.error(f"Error Crítico al Cargar Configuración '{config_name}': {e}")
+        return None
 
 
-# --- Carga de Modelos LGBM y Umbral ---
-logger.info("APP_INIT: Iniciando carga de modelos LGBM y umbral.")
-pipe_low_lgbm_app = load_joblib_object(PIPE_LOW_LGBM_PATH, "Pipeline LGBM Precios Bajos")
-pipe_high_lgbm_app = load_joblib_object(PIPE_HIGH_LGBM_PATH, "Pipeline LGBM Precios Altos")
-threshold_lgbm_app = load_threshold_from_json(THRESHOLD_LGBM_PATH)
+# --- Carga de TODOS los Modelos y Preprocesadores ---
+logger.info("APP_INIT: Iniciando carga de artefactos de TODOS los modelos.")
+# MLP
+mlp_model_layer = load_tf_model_as_layer(MLP_SAVED_MODEL_PATH)
+mlp_ohe = load_joblib_preprocessor(MLP_OHE_PATH, "MLP OneHotEncoder")
+mlp_scaler = load_joblib_preprocessor(MLP_SCALER_PATH, "MLP ScalerNumérico")
+
+# LightGBM Pipelines
+lgbm_pipeline_high = load_sklearn_pipeline(LGBM_HIGH_PKL_PATH, "Pipeline LGBM High")
+lgbm_pipeline_low = load_sklearn_pipeline(LGBM_LOW_PKL_PATH, "Pipeline LGBM Low")
+lgbm_threshold_config = load_json_config(LGBM_THRESHOLD_JSON_PATH, "LGBM Threshold Config")
+# Asegurar que lgbm_threshold_value tenga un valor por defecto si la carga falla
+lgbm_threshold_value = lgbm_threshold_config.get("threshold", 30.0) if lgbm_threshold_config else 30.0
+if lgbm_threshold_config is None: logger.warning("LGBM_THRESHOLD: Usando umbral por defecto (30.0) porque el archivo de config no cargó.")
 
 
-# --- FUNCIONES UTILITARIAS DE DATOS ---
+# --- FUNCIONES UTILITARIAS DE DATOS (Definidas antes de su primer uso) ---
 @st.cache_data(ttl=3600)
 def get_latest_snapshot_info(_client: bigquery.Client) -> tuple[str | None, pd.Timestamp | None]:
+    # ... (código sin cambios) ...
     query = f"SELECT table_id FROM `{_client.project}.{BIGQUERY_DATASET}`.__TABLES__ WHERE STARTS_WITH(table_id, 'monthly_') ORDER BY table_id DESC LIMIT 1"
     try:
         results = _client.query(query).result()
@@ -145,6 +207,7 @@ POKEMON_SUFFIXES_TO_REMOVE = [' VMAX', ' VSTAR', ' V-UNION', ' V', ' GX', ' EX',
 MULTI_WORD_BASE_NAMES = ["Mr. Mime", "Mime Jr.", "Farfetch'd", "Sirfetch'd", "Ho-Oh", "Porygon-Z", "Type: Null", "Tapu Koko", "Tapu Lele", "Tapu Bulu", "Tapu Fini", "Mr. Rime", "Indeedee M", "Indeedee F", "Great Tusk", "Iron Treads"]
 
 def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
+    # ... (código sin cambios) ...
     if not isinstance(name_str, str) or supertype != 'Pokémon': return name_str
     for mw_base in multi_word_bases:
         if name_str.startswith(mw_base): return mw_base
@@ -155,6 +218,7 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
 
 @st.cache_data(ttl=3600)
 def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
+    # ... (código sin cambios) ...
     query = f"""
     SELECT
         id,
@@ -187,13 +251,16 @@ def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
         else: logger.error(f"METADATA_BQ: Error al cargar metadatos de BigQuery: {e}", exc_info=True); st.error(f"Error al cargar metadatos de cartas: {e}.")
         return pd.DataFrame()
 
-# --- FUNCIÓN DE CONSULTA DE DATOS DE PRECIOS Y METADATOS COMBINADOS ---
 @st.cache_data(ttl=600)
 def fetch_card_data_from_bq(
     _client: bigquery.Client, latest_table_path_param: str, snapshot_date_param: pd.Timestamp,
     supertype_ui_filter: str | None, sets_ui_filter: list, names_ui_filter: list, rarities_ui_filter: list,
     sort_direction: str, full_metadata_df_param: pd.DataFrame
 ) -> pd.DataFrame:
+    # ... (código de fetch_card_data_from_bq sin cambios estructurales, solo asegurar que las columnas
+    #      necesarias para AMBOS modelos (MLP y LGBM) se seleccionen o creen aquí)
+    #      Específicamente, 'price' (para MLP y LGBM), y las columnas cm_avgX y cm_trendPrice para LGBM.
+    #      'days_since_prev_snapshot' se añade aquí.
     logger.info(f"FETCH_BQ_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
     
     ids_to_query_df = full_metadata_df_param.copy()
@@ -222,12 +289,12 @@ def fetch_card_data_from_bq(
         meta.images_large AS image_url,
         meta.cardmarket_url,
         meta.tcgplayer_url,
-        prices.cm_averageSellPrice AS precio,
-        prices.cm_trendPrice,
-        prices.cm_avg1,
-        prices.cm_avg7,
-        prices.cm_avg30,
-        DATE('{snapshot_date_str_for_query}') AS fecha_snapshot
+        prices.cm_averageSellPrice AS price, -- Usado por MLP (price_t0_log) y LGBM (prev_price)
+        prices.cm_trendPrice,                -- Usado por LGBM
+        prices.cm_avg1,                      -- Usado por LGBM
+        prices.cm_avg7,                      -- Usado por LGBM (y como umbral)
+        prices.cm_avg30,                     -- Usado por LGBM
+        DATE('{snapshot_date_str_for_query}') AS fecha_snapshot -- Necesario para días_desde_prev si lo calculas dinámicamente
     FROM `{CARD_METADATA_TABLE}` AS meta
     LEFT JOIN `{latest_table_path_param}` AS prices ON meta.id = prices.id
     WHERE meta.id IN UNNEST(@card_ids_param)
@@ -238,14 +305,17 @@ def fetch_card_data_from_bq(
     logger.info(f"FETCH_BQ_DATA: SQL BQ para {len(list_of_card_ids_to_query)} IDs. Orden: {sort_direction}")
     try:
         results_from_bq_df = _client.query(query_sql_template, job_config=job_config_bq).to_dataframe()
-        price_cols_to_convert = ['precio', 'cm_trendPrice', 'cm_avg1', 'cm_avg7', 'cm_avg30']
+        price_cols_to_convert = ['price', 'cm_trendPrice', 'cm_avg1', 'cm_avg7', 'cm_avg30']
         for pcol in price_cols_to_convert:
             if pcol in results_from_bq_df.columns:
                  results_from_bq_df[pcol] = pd.to_numeric(results_from_bq_df[pcol], errors='coerce')
         
         # Añadir 'days_since_prev_snapshot' (necesario para LGBM)
-        # Para la predicción actual (no futura), esto es 0, o podría ser ~30 si comparas con snapshot anterior
-        results_from_bq_df['days_since_prev_snapshot'] = 30.0 # Ejemplo: asumir 30 días desde el último precio conocido
+        # Para la predicción del precio "justo" actual, esto podría ser 0 o un valor pequeño.
+        # Si estás prediciendo el precio DEL SNAPSHOT ACTUAL, es 0.
+        # Si tu modelo LGBM fue entrenado con esta feature representando un "lag", usa ese lag.
+        # Por ahora, se usa como input para la función de predicción LGBM
+        results_from_bq_df['days_since_prev_snapshot'] = 30.0 # O 0, dependiendo de cómo se entrenó el LGBM
         logger.info("FETCH_BQ_DATA: Añadida columna 'days_since_prev_snapshot'.")
 
         logger.info(f"FETCH_BQ_DATA: Consulta a BQ OK. Filas: {len(results_from_bq_df)}.")
@@ -256,12 +326,66 @@ def fetch_card_data_from_bq(
         else: logger.error(f"FETCH_BQ_DATA_FAIL: Error BQ: {e}", exc_info=True); st.error(f"Error al obtener datos de cartas: {e}.")
         return pd.DataFrame()
 
+# --- FUNCIONES DE PREDICCIÓN ---
+# MLP
+def predict_price_with_mlp(
+    model_layer: tf.keras.layers.TFSMLayer, ohe_mlp: typing.Any, scaler_mlp: typing.Any,
+    card_data_series: pd.Series
+) -> float | None:
+    # ... (código de predict_price_with_local_tf_layer sin cambios estructurales,
+    #      solo renombrado y usando las constantes MLP: _MLP_NUM_COLS, _MLP_CAT_COLS, etc.) ...
+    logger.info(f"PREDICT_MLP: Iniciando para ID: {card_data_series.get('id', 'N/A')}")
+    if not model_layer or not ohe_mlp or not scaler_mlp: return None
+    try:
+        data_dict = {}
+        price_val = card_data_series.get('price') # 'price' es cm_averageSellPrice
+        data_dict['price_t0_log'] = np.log1p(price_val) if pd.notna(price_val) and price_val > 0 else np.log1p(0)
+        data_dict['days_diff'] = float(_MLP_DAYS_DIFF) # Usa la constante global
 
-# --- FUNCIÓN DE PREDICCIÓN CON MODELOS LGBM ---
+        for col in _MLP_CAT_COLS: # Usa las columnas categóricas definidas para MLP
+            val = card_data_series.get(col) # Espera que card_data_series tenga estos nombres
+            if col == 'types':
+                if isinstance(val, list) and val: data_dict[col] = str(val[0]) if pd.notna(val[0]) else 'Unknown_Type'
+                elif pd.notna(val): data_dict[col] = str(val)
+                else: data_dict[col] = 'Unknown_Type'
+            elif col == 'subtypes':
+                if isinstance(val, list) and val: cleaned = [str(s) for s in val if pd.notna(s)]; data_dict[col] = ', '.join(sorted(list(set(cleaned)))) if cleaned else 'None'
+                elif pd.notna(val): data_dict[col] = str(val)
+                else: data_dict[col] = 'None'
+            else: # Para artist_name, pokemon_name, rarity, set_name, supertype
+                 data_dict[col] = str(val) if pd.notna(val) else f'Unknown_{col.replace("_name","").capitalize()}'
+
+        df_prep = pd.DataFrame([data_dict])
+        # Asegurar que el orden de las columnas sea el que esperan los preprocesadores
+        ordered_cols_for_mlp = _MLP_NUM_COLS + _MLP_CAT_COLS
+        try:
+            df_prep = df_prep[ordered_cols_for_mlp]
+        except KeyError as e_key_mlp:
+            missing_keys_mlp = [col for col in ordered_cols_for_mlp if col not in df_prep.columns]
+            logger.error(f"PREDICT_MLP_ORDER_FAIL: Faltan columnas para preprocesamiento MLP: {missing_keys_mlp}. Error: {e_key_mlp}")
+            return None
+
+        num_feat = scaler_mlp.transform(df_prep[_MLP_NUM_COLS].fillna(0))
+        cat_feat = mlp_ohe.transform(df_prep[_MLP_CAT_COLS].astype(str))
+        X_final = np.concatenate([num_feat, cat_feat], axis=1)
+
+        EXPECTED_MLP_FEATURES = 4865 # Reconfirmar este número si el OHE cambió
+        if X_final.shape[1] != EXPECTED_MLP_FEATURES:
+            logger.error(f"MLP SHAPE MISMATCH! Expected {EXPECTED_MLP_FEATURES}, got {X_final.shape[1]}")
+            return None
+        
+        pred_raw = model_layer(**{_MLP_INPUT_KEY: tf.convert_to_tensor(X_final, dtype=tf.float32)})
+        pred_tensor = pred_raw[_MLP_OUTPUT_KEY]
+        pred_numeric = pred_tensor.numpy()[0][0]
+        return np.expm1(pred_numeric) if _MLP_TARGET_LOG else pred_numeric
+    except Exception as e: logger.error(f"PREDICT_MLP_EXC: {e}", exc_info=True); return None
+
+# LightGBM
 def predict_price_with_lgbm_pipelines_app(
     pipe_low_lgbm_loaded, pipe_high_lgbm_loaded, threshold_value: float,
-    card_data_series: pd.Series
+    card_data_series: pd.Series # Esta Series DEBE tener las columnas que espera el LGBM
 ) -> tuple[float | None, str | None]:
+    # ... (código sin cambios respecto a la v1.15 LGBM) ...
     logger.info(f"LGBM_PRED_APP: Iniciando predicción para carta ID: {card_data_series.get('id', 'N/A')}")
     model_type_used = "N/A"
     if not pipe_low_lgbm_loaded or not pipe_high_lgbm_loaded:
@@ -278,12 +402,10 @@ def predict_price_with_lgbm_pipelines_app(
             else:
                 val = card_data_series.get(col_name) # Para todas las demás (cm_avgX, categóricas)
 
-            # Imputación/Conversión para numéricas
-            if col_name in _LGBM_NUMERIC_FEATURES_APP:
+            if col_name in _LGBM_NUM_FEATURES_INPUT:
                 input_dict[col_name] = float(val) if pd.notna(val) else 0.0
                 if pd.isna(val): logger.warning(f"LGBM_PRED_APP: Feature numérica '{col_name}' es NaN. Usando 0.0.")
-            # Conversión/Manejo para categóricas
-            elif col_name in _LGBM_CATEGORICAL_FEATURES_APP:
+            elif col_name in _LGBM_CAT_FEATURES_INPUT:
                 if col_name == 'types':
                     if isinstance(val, list) and val: input_dict[col_name] = str(val[0]) if pd.notna(val[0]) else 'Unknown_Type'
                     elif pd.notna(val): input_dict[col_name] = str(val)
@@ -294,11 +416,15 @@ def predict_price_with_lgbm_pipelines_app(
                         input_dict[col_name] = ', '.join(sorted(list(set(cleaned_subtypes)))) if cleaned_subtypes else 'None'
                     elif pd.notna(val): input_dict[col_name] = str(val)
                     else: input_dict[col_name] = 'None'
-                else: # Para otras categóricas como artist_name, pokemon_name, rarity, set_name, supertype
+                else:
                      input_dict[col_name] = str(val) if pd.notna(val) else f'Unknown_{col_name.replace("_name","").capitalize()}'
-
+        
         X_new_predict_df = pd.DataFrame([input_dict])
-        # Reordenar y asegurar que solo las columnas esperadas estén presentes
+        missing_cols_for_lgbm_pipe = [col for col in _LGBM_ALL_FEATURES_APP if col not in X_new_predict_df.columns]
+        if missing_cols_for_lgbm_pipe:
+             logger.error(f"LGBM_PRED_APP: Faltan columnas en el DataFrame final para el pipeline LGBM: {missing_cols_for_lgbm_pipe}")
+             st.error(f"Error Interno: Faltan datos para predicción LGBM ({', '.join(missing_cols_for_lgbm_pipe)}).")
+             return None, model_type_used # Devuelve model_type_used que es "N/A"
         X_new_predict_for_pipe = X_new_predict_df[_LGBM_ALL_FEATURES_APP]
 
         threshold_feature_value = X_new_predict_for_pipe.loc[0, _LGBM_THRESHOLD_COLUMN_APP]
@@ -306,22 +432,22 @@ def predict_price_with_lgbm_pipelines_app(
             logger.warning(f"LGBM_PRED_APP: Valor para '{_LGBM_THRESHOLD_COLUMN_APP}' es NaN. Usando pipeline bajo por defecto.")
             threshold_feature_value = threshold_value - 1
 
-        active_pipe = pipe_low_lgbm_loaded if threshold_feature_value < threshold_value else pipe_high_lgbm_loaded
+        active_pipe = pipe_low_lgbm_app if threshold_feature_value < threshold_value else pipe_high_lgbm_app
         model_type_used = "Bajo Precio" if threshold_feature_value < threshold_value else "Alto Precio"
         logger.info(f"LGBM_PRED_APP: Usando pipeline de {model_type_used} basado en {_LGBM_THRESHOLD_COLUMN_APP}={threshold_feature_value}")
-
+        
         pred_log = active_pipe.predict(X_new_predict_for_pipe)
         prediction_final = np.expm1(pred_log[0]) if _LGBM_TARGET_IS_LOG_TRANSFORMED else pred_log[0]
         logger.info(f"LGBM_PRED_APP: Predicción (escala original): {prediction_final:.2f}€")
         return float(prediction_final), model_type_used
-    except KeyError as e_key: logger.error(f"LGBM_PRED_APP: KeyError: {e_key}", exc_info=True); st.error(f"Error Datos: Falta '{e_key}'."); return None, None
-    except Exception as e: logger.error(f"LGBM_PRED_APP_EXC: Excepción: {e}", exc_info=True); st.error(f"Error Predicción LGBM: {e}"); return None, None
+    except KeyError as e_key: logger.error(f"LGBM_PRED_APP: KeyError en mapeo o acceso a datos: {e_key}", exc_info=True); st.error(f"Error Datos: Falta la clave '{e_key}' en los datos de la carta. Revisa la configuración de features y la consulta a BQ."); return None, model_type_used
+    except Exception as e: logger.error(f"LGBM_PRED_APP_EXC: Excepción durante preprocesamiento o predicción LGBM: {e}", exc_info=True); st.error(f"Error Predicción LGBM: {e}"); return None, model_type_used
 
 
 # --- Carga de Datos Inicial de BigQuery ---
 logger.info("APP_INIT: Cargando datos iniciales de BigQuery.")
 LATEST_SNAPSHOT_TABLE_PATH, LATEST_SNAPSHOT_DATE = get_latest_snapshot_info(bq_client)
-all_card_metadata_df = get_card_metadata_with_base_names(bq_client) # Contiene alias pokemon_name, artist_name
+all_card_metadata_df = get_card_metadata_with_base_names(bq_client)
 
 if not LATEST_SNAPSHOT_TABLE_PATH or LATEST_SNAPSHOT_DATE is None or all_card_metadata_df.empty:
     logger.critical("APP_INIT_FAIL: Datos esenciales de BigQuery no cargados.")
@@ -332,7 +458,8 @@ logger.info("APP_INIT: Datos iniciales de BigQuery cargados OK.")
 
 # --- Sidebar y Filtros ---
 st.sidebar.header("Filtros y Opciones")
-options_df_for_filters = all_card_metadata_df.copy()
+options_df_for_filters = all_card_metadata_df.copy() # Usar metadatos completos para opciones de filtro
+# ... (resto del código de la sidebar igual) ...
 supertype_options_list = sorted(options_df_for_filters['supertype'].dropna().unique().tolist())
 select_supertype_options = ["Todos"] + supertype_options_list if supertype_options_list else ["Todos"]
 selected_supertype = st.sidebar.selectbox("Categoría:", select_supertype_options, index=0, key="sb_supertype_filter_v3")
@@ -352,7 +479,8 @@ selected_rarities = st.sidebar.multiselect("Rareza(s):", rarity_options_list, ke
 sort_order = st.sidebar.radio("Ordenar por Precio (Trend):", ("Ascendente", "Descendente"), index=1, key="rd_sort_order_v3")
 sort_sql = "ASC" if sort_order == "Ascendente" else "DESC"
 
-# --- Carga de results_df ---
+
+# --- Carga de results_df (después de filtros sidebar) ---
 logger.info("MAIN_APP: Fetcheando resultados principales de BigQuery (basado en filtros de sidebar).")
 results_df = fetch_card_data_from_bq(
     bq_client, LATEST_SNAPSHOT_TABLE_PATH, LATEST_SNAPSHOT_DATE,
@@ -379,6 +507,7 @@ st.title("Explorador de Cartas Pokémon TCG")
 
 if is_initial_unfiltered_load and not all_card_metadata_df.empty:
     st.header("Cartas Destacadas")
+    # ... (lógica de cartas destacadas sin cambios) ...
     special_illustration_rares = all_card_metadata_df[all_card_metadata_df['rarity'] == FEATURED_RARITY].copy()
     if not special_illustration_rares.empty:
         num_cards_to_show = min(len(special_illustration_rares), NUM_FEATURED_CARDS_TO_DISPLAY)
@@ -390,17 +519,20 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
              for i, card in display_cards_df.iterrows():
                  if i < len(cols):
                      with cols[i]:
-                         card_name_featured = card.get('pokemon_name', 'N/A') # Usar pokemon_name del DF
+                         card_name_featured = card.get('pokemon_name', 'N/A')
                          card_set_featured = card.get('set_name', 'N/A')
-                         image_url_featured = card.get('image_url') # Usar 'image_url'
+                         image_url_featured = card.get('image_url')
                          if pd.notna(image_url_featured): st.image(image_url_featured, width=150, caption=card_set_featured)
                          else: st.warning("Imagen no disp."); st.caption(f"{card_name_featured} ({card_set_featured})")
              st.markdown("---")
     if special_illustration_rares.empty and results_df.empty and is_initial_unfiltered_load and bq_client and LATEST_SNAPSHOT_TABLE_PATH:
          st.info("No se encontraron cartas con la rareza destacada o con precio en la base de datos actual.")
 
-elif not is_initial_unfiltered_load:
+
+elif not is_initial_unfiltered_load: # Tabla visible solo al aplicar filtros
     st.header("Resultados de Cartas")
+    # ... (lógica AgGrid sin cambios estructurales, solo asegurar que los nombres de columna en display_columns_mapping
+    #      coincidan con los alias usados en fetch_card_data_from_bq, ej. 'artist_name', 'pokemon_name', 'precio') ...
     results_df_for_aggrid_display = results_df
     if len(results_df) > MAX_ROWS_NO_FILTER :
         st.info(f"Mostrando los primeros {MAX_ROWS_NO_FILTER} de {len(results_df)} resultados. Aplica filtros.")
@@ -418,7 +550,7 @@ elif not is_initial_unfiltered_load:
         gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25)
         gridOptions = gb.build()
         st.write("Haz clic en una fila de la tabla para ver sus detalles:")
-        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_v1_18')
+        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_vFINAL_LGBM')
         if grid_response:
             selected_rows_data = grid_response.get('selected_rows')
             if isinstance(selected_rows_data, list) and selected_rows_data:
@@ -445,14 +577,16 @@ if st.session_state.selected_card_id_from_grid is not None:
     st.divider(); st.header("Detalle de Carta Seleccionada")
     card_to_display_in_detail_section = None
     id_for_detail_view = st.session_state.selected_card_id_from_grid
-    source_df_for_details = results_df if (not results_df.empty and id_for_detail_view in results_df['id'].values) else all_card_metadata_df
-    if not source_df_for_details.empty:
-        matched_rows = source_df_for_details[source_df_for_details['id'] == id_for_detail_view]
+    source_df = results_df if (not results_df.empty and id_for_detail_view in results_df['id'].values) else all_card_metadata_df
+    if not source_df.empty:
+        matched_rows = source_df[source_df['id'] == id_for_detail_view]
         if not matched_rows.empty: card_to_display_in_detail_section = matched_rows.iloc[0]
         else: st.session_state.selected_card_id_from_grid = None; st.rerun()
     else: st.error("Error: No se cargaron metadatos."); st.stop()
 
     if card_to_display_in_detail_section is not None:
+        # ... (extracción de card_..._render igual) ...
+        card_id_render = card_to_display_in_detail_section.get('id', "N/A")
         card_name_render = card_to_display_in_detail_section.get('pokemon_name', "N/A")
         card_set_render = card_to_display_in_detail_section.get('set_name', "N/A")
         card_image_url_render = card_to_display_in_detail_section.get('image_url', None)
@@ -465,57 +599,76 @@ if st.session_state.selected_card_id_from_grid is not None:
              if pd.notna(price_check): card_price_actual_render = price_check;
         cardmarket_url_render = card_to_display_in_detail_section.get('cardmarket_url', None)
         tcgplayer_url_render = card_to_display_in_detail_section.get('tcgplayer_url', None)
+        
         col_img, col_info = st.columns([1, 2])
-        with col_img:
+        with col_img: # ... (código de imagen y links igual) ...
             if pd.notna(card_image_url_render): st.image(card_image_url_render, caption=f"{card_name_render} ({card_set_render})", width=300)
             else: st.warning("Imagen no disponible.")
             links_html = []
-            if pd.notna(cardmarket_url_render) and cardmarket_url_render.startswith("http"): links_html.append(f"<a href='{cardmarket_url_render}' target='_blank' style='...'>Cardmarket</a>")
-            if pd.notna(tcgplayer_url_render) and tcgplayer_url_render.startswith("http"): links_html.append(f"<a href='{tcgplayer_url_render}' target='_blank' style='...'>TCGplayer</a>")
+            if pd.notna(cardmarket_url_render) and cardmarket_url_render.startswith("http"): links_html.append(f"<a href='{cardmarket_url_render}' target='_blank' style='...'>Cardmarket</a>") # Estilos omitidos por brevedad
+            if pd.notna(tcgplayer_url_render) and tcgplayer_url_render.startswith("http"): links_html.append(f"<a href='{tcgplayer_url_render}' target='_blank' style='...'>TCGplayer</a>") # Estilos omitidos
             if links_html: st.markdown(" ".join(links_html), unsafe_allow_html=True)
             else: st.caption("Links no disponibles.")
+
         with col_info:
             st.subheader(f"{card_name_render}")
-            st.markdown(f"**ID:** `{card_to_display_in_detail_section.get('id')}`"); st.markdown(f"**Categoría:** {card_supertype_render}"); st.markdown(f"**Set:** {card_set_render}"); st.markdown(f"**Rareza:** {card_rarity_render}")
+            st.markdown(f"**ID:** `{card_id_render}`"); st.markdown(f"**Categoría:** {card_supertype_render}"); st.markdown(f"**Set:** {card_set_render}"); st.markdown(f"**Rareza:** {card_rarity_render}")
             if pd.notna(card_artist_render): st.markdown(f"**Artista:** {card_artist_render}")
             if pd.notna(card_price_actual_render): st.metric(label="Precio Actual (€)", value=f"€{card_price_actual_render:.2f}")
             else: st.markdown("**Precio Actual (€):** N/A")
             st.markdown("---"); st.subheader("Estimaciones de Precio")
 
-            # Lógica para mostrar el botón de predicción LGBM
-            if pipe_low_lgbm_app and pipe_high_lgbm_app and threshold_lgbm_app is not None:
-                # Definir las columnas necesarias para el botón de predicción LGBM ANTES de usarlas
-                required_lgbm_cols_for_pred_button = [_LGBM_THRESHOLD_COLUMN_APP] + _LGBM_ALL_FEATURES_APP
-                # Asegurar que 'precio' (para 'prev_price') esté en la lista si no está ya en _LGBM_ALL_FEATURES_APP
-                if 'precio' not in required_lgbm_cols_for_pred_button:
-                    required_lgbm_cols_for_pred_button.append('precio')
-                required_lgbm_cols_for_pred_button = list(set(required_lgbm_cols_for_pred_button)) # Unicidad
+            # Botón de Predicción MLP
+            if mlp_model_layer and mlp_ohe and mlp_scaler:
+                if pd.notna(card_price_actual_render): # Necesita precio actual para 'price_t0_log'
+                    if st.button("🔮 Estimar Precio Futuro (MLP)", key=f"predict_mlp_btn_{card_id_render}"):
+                        with st.spinner("Calculando estimación futura (MLP)..."):
+                            pred_price_mlp = predict_price_with_mlp(mlp_model_layer, mlp_ohe, mlp_scaler, card_to_display_in_detail_section)
+                        if pred_price_mlp is not None:
+                            delta_mlp = pred_price_mlp - card_price_actual_render
+                            delta_color_mlp = "normal" if delta_mlp < -0.01 else ("inverse" if delta_mlp > 0.01 else "off")
+                            st.metric(label="Estimado Futuro (MLP)", value=f"€{pred_price_mlp:.2f}", delta=f"{delta_mlp:+.2f}€ vs Actual", delta_color=delta_color_mlp)
+                        else: st.warning("No se pudo obtener estimación futura (MLP).")
+                else:
+                    st.info("Estimación futura (MLP) no posible sin precio actual para esta carta.")
+            else:
+                st.caption("Modelo MLP para estimación futura no disponible.")
+
+            # Botón de Predicción LGBM
+            if lgbm_pipeline_high or lgbm_pipeline_low:
+                # Columnas requeridas para que el botón aparezca.
+                # 'precio' (para prev_price) es clave, y la columna de umbral.
+                # Las otras categóricas/numéricas serán imputadas en la función si faltan.
+                required_lgbm_button_cols = ['precio', _LGBM_THRESHOLD_COLUMN_APP]
+                # También deben estar las categóricas para que el OHE no falle con solo NaNs.
+                required_lgbm_button_cols += _LGBM_CAT_FEATURES_INPUT
+                required_lgbm_button_cols = list(set(required_lgbm_button_cols))
+
 
                 can_predict_lgbm = all(
                     col in card_to_display_in_detail_section.index and \
-                    pd.notna(card_to_display_in_detail_section.get(col)) for col in required_lgbm_cols_for_pred_button
+                    pd.notna(card_to_display_in_detail_section.get(col)) for col in required_lgbm_button_cols
                 )
 
                 if can_predict_lgbm:
-                     if st.button("⚡ Estimar Precio Actual (LGBM)", key=f"predict_lgbm_btn_{card_to_display_in_detail_section.get('id')}"):
-                         with st.spinner("Calculando estimación (LGBM)..."):
-                             pred_price, pipeline_lgbm_used = predict_price_with_lgbm_pipelines_app(
-                                 pipe_low_lgbm_app, pipe_high_lgbm_app, threshold_lgbm_app,
-                                 card_to_display_in_detail_section # Pasar la Series completa
+                     if st.button("⚖️ Calcular Precio Justo (LGBM)", key=f"predict_lgbm_btn_{card_id_render}"):
+                         with st.spinner("Calculando precio justo (LGBM)..."):
+                             pred_price_lgbm, pipeline_lgbm_used = predict_price_with_lgbm_pipelines_app(
+                                 lgbm_pipeline_low, lgbm_pipeline_high, lgbm_threshold_value, # Pasar threshold_lgbm_value
+                                 card_to_display_in_detail_section
                              )
-                         if pred_price is not None and card_price_actual_render is not None:
-                             delta_lgbm = pred_price - card_price_actual_render
-                             delta_color_lgbm = "normal" if delta_lgbm < -0.01 else ("inverse" if delta_lgbm > 0.01 else "off")
-                             st.metric(label=f"Precio Justo Estimado ({pipeline_lgbm_used})", value=f"€{pred_price:.2f}", delta=f"{delta_lgbm:+.2f}€ vs Actual", delta_color=delta_color_lgbm)
-                         elif pred_price is not None:
-                              st.metric(label=f"Precio Justo Estimado ({pipeline_lgbm_used})", value=f"€{pred_price:.2f}")
-                         else: st.warning("No se pudo obtener estimación (LGBM).")
+                         if pred_price_lgbm is not None:
+                             st.metric(label=f"Precio Justo Estimado ({pipeline_lgbm_used})", value=f"€{pred_price_lgbm:.2f}")
+                             if pd.notna(card_price_actual_render):
+                                 delta_lgbm = pred_price_lgbm - card_price_actual_render
+                                 st.caption(f"Diferencia con precio actual: {delta_lgbm:+.2f}€")
+                         else: st.warning("No se pudo obtener el precio justo (LGBM).")
                 else:
-                     # Definir missing_pred_cols aquí también por si can_predict_lgbm es False
-                     missing_pred_cols = [col for col in required_lgbm_cols_for_pred_button if col not in card_to_display_in_detail_section.index or pd.isna(card_to_display_in_detail_section.get(col))]
-                     st.info(f"Datos insuficientes para estimación LGBM (faltan o son NaN: {', '.join(missing_pred_cols)}).")
+                     # Definir missing_pred_cols aquí también
+                     missing_pred_cols = [col for col in required_lgbm_button_cols if col not in card_to_display_in_detail_section.index or pd.isna(card_to_display_in_detail_section.get(col))]
+                     st.info(f"Datos insuficientes para estimación de precio justo LGBM (faltan o son NaN: {', '.join(missing_pred_cols)}).")
             else:
-                 st.caption("Modelos LGBM o umbral no disponibles.")
+                 st.caption("Modelos LGBM para estimación de precio justo no disponibles.")
 else:
     if results_df.empty and not is_initial_unfiltered_load: st.info("No se encontraron cartas con los filtros seleccionados.")
     elif results_df.empty and is_initial_unfiltered_load:
@@ -523,4 +676,4 @@ else:
         else: st.info("No se encontraron cartas destacadas ni otros resultados iniciales.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.18 | LGBM")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.19 | MLP & LGBM")
