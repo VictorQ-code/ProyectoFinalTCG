@@ -55,8 +55,16 @@ PIPE_HIGH_LGBM_PATH = os.path.join(LGBM_MODEL_DIR, PIPE_HIGH_PKL_FILENAME)
 THRESHOLD_LGBM_PATH = os.path.join(LGBM_MODEL_DIR, THRESHOLD_JSON_FILENAME)
 
 # --- CONFIGURACIÓN DE FEATURES PARA LGBM ---
-_LGBM_NUMERIC_FEATURES_APP = ['prev_price', 'days_since_prev_snapshot', 'cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
-_LGBM_CATEGORICAL_FEATURES_APP = ['artist', 'name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
+# Estos nombres DEBEN COINCIDIR con los nombres de columna que tus pipelines LGBM esperan
+# (es decir, con los que fueron entrenados en tu notebook)
+_LGBM_NUMERIC_FEATURES_APP = [
+    'prev_price', 'days_since_prev_snapshot',
+    'cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice'
+]
+_LGBM_CATEGORICAL_FEATURES_APP = [
+    'artist_name', 'pokemon_name', 'rarity', # Estos son los nombres DESPUÉS de los alias
+    'set_name', 'types', 'supertype', 'subtypes'
+]
 _LGBM_ALL_FEATURES_APP = _LGBM_NUMERIC_FEATURES_APP + _LGBM_CATEGORICAL_FEATURES_APP
 _LGBM_THRESHOLD_COLUMN_APP = 'cm_avg7'
 _LGBM_TARGET_IS_LOG_TRANSFORMED = True
@@ -150,18 +158,28 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
 
 @st.cache_data(ttl=3600)
 def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
+    # Query para metadatos, usando nombres de columna reales de BQ y aplicando alias
     query = f"""
     SELECT
-        id, name AS pokemon_name, supertype, subtypes, types,
-        rarity, set_name, artist AS artist_name,
-        images_large AS image_url, cardmarket_url, tcgplayer_url
+        id,
+        name         AS pokemon_name, -- Nombre original de la carta
+        supertype,
+        subtypes,
+        types,
+        rarity,
+        set_name,
+        artist       AS artist_name,  -- Nombre del artista
+        images_large AS image_url,
+        cardmarket_url,
+        tcgplayer_url
     FROM `{CARD_METADATA_TABLE}`
     """
     logger.info(f"METADATA_BQ: Ejecutando query para metadatos: {query[:100]}...")
     try:
         df = _client.query(query).to_dataframe()
         if df.empty: logger.warning("METADATA_BQ: DataFrame de metadatos vacío."); st.warning("No se pudo cargar metadatos."); return pd.DataFrame()
-        expected_cols = _LGBM_CATEGORICAL_FEATURES_APP + ['cardmarket_url', 'tcgplayer_url', 'image_url']
+        # Las columnas ya tienen los alias pokemon_name y artist_name desde la query
+        expected_cols = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes', 'cardmarket_url', 'tcgplayer_url', 'image_url']
         for col in expected_cols:
             if col not in df.columns:
                 df[col] = 'Unknown_Placeholder' if col not in ['cardmarket_url', 'tcgplayer_url', 'image_url'] else None
@@ -177,9 +195,15 @@ def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
 # --- FUNCIÓN DE CONSULTA DE DATOS DE PRECIOS Y METADATOS COMBINADOS ---
 @st.cache_data(ttl=600)
 def fetch_card_data_from_bq(
-    _client: bigquery.Client, latest_table_path_param: str, snapshot_date_param: pd.Timestamp,
-    supertype_ui_filter: str | None, sets_ui_filter: list, names_ui_filter: list, rarities_ui_filter: list,
-    sort_direction: str, full_metadata_df_param: pd.DataFrame
+    _client: bigquery.Client,
+    latest_table_path_param: str,
+    snapshot_date_param: pd.Timestamp,
+    supertype_ui_filter: str | None,
+    sets_ui_filter: list,
+    names_ui_filter: list,
+    rarities_ui_filter: list,
+    sort_direction: str,
+    full_metadata_df_param: pd.DataFrame
 ) -> pd.DataFrame:
     logger.info(f"FETCH_BQ_DATA: Ini. SType:{supertype_ui_filter}, Sets:{len(sets_ui_filter)}, Names:{len(names_ui_filter)}, Rars:{len(rarities_ui_filter)}")
     
@@ -196,16 +220,28 @@ def fetch_card_data_from_bq(
     if not list_of_card_ids_to_query: logger.info("FETCH_BQ_DATA: Lista IDs vacía."); return pd.DataFrame()
 
     snapshot_date_str_for_query = snapshot_date_param.strftime('%Y-%m-%d')
+    # Query SQL CORREGIDA para usar nombres de columna reales de BQ y aplicar alias
     query_sql_template = f"""
     SELECT
-        meta.id, meta.name, meta.supertype, meta.subtypes, meta.types,
-        meta.set_name, meta.rarity, meta.artist, meta.image_url,
-        meta.cardmarket_url, meta.tcgplayer_url,
-        prices.cm_averageSellPrice AS precio, prices.cm_trendPrice,
-        prices.cm_avg1, prices.cm_avg7, prices.cm_avg30,
+        meta.id,
+        meta.name AS pokemon_name,         -- De CARD_METADATA_TABLE (alias meta)
+        meta.supertype,
+        meta.subtypes,
+        meta.types,
+        meta.set_name,
+        meta.rarity,
+        meta.artist AS artist_name,        -- De CARD_METADATA_TABLE (alias meta)
+        meta.images_large AS image_url,
+        meta.cardmarket_url,
+        meta.tcgplayer_url,
+        prices.cm_averageSellPrice AS precio, -- Nombre de columna real en tabla prices
+        prices.cm_trendPrice,
+        prices.cm_avg1,
+        prices.cm_avg7,
+        prices.cm_avg30,
         DATE('{snapshot_date_str_for_query}') AS fecha_snapshot
     FROM `{CARD_METADATA_TABLE}` AS meta
-    LEFT JOIN `{latest_table_path_param}` AS prices ON meta.id = prices.id
+    LEFT JOIN `{latest_table_path_param}` AS prices ON meta.id = prices.id -- Usar 'id' de la tabla prices
     WHERE meta.id IN UNNEST(@card_ids_param)
     ORDER BY prices.cm_averageSellPrice {sort_direction}
     """
@@ -231,6 +267,7 @@ def predict_price_with_lgbm_pipelines_app(
     pipe_low_lgbm_loaded, pipe_high_lgbm_loaded, threshold_lgbm_value: float,
     card_data_for_prediction: pd.Series
 ) -> tuple[float | None, str | None]:
+    # ... (código de la función sin cambios estructurales, ya es robusta) ...
     logger.info(f"LGBM_PRED_APP: Iniciando predicción para carta ID: {card_data_for_prediction.get('id', 'N/A')}")
     model_type_used = None
     if not pipe_low_lgbm_loaded or not pipe_high_lgbm_loaded or threshold_lgbm_value is None:
@@ -382,8 +419,7 @@ elif not is_initial_unfiltered_load:
         grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_v1_13')
         if grid_response:
             selected_rows_data = grid_response.get('selected_rows')
-            # --- CORRECCIÓN EN MANEJO DE CLIC DE AGGRID ---
-            if isinstance(selected_rows_data, list) and selected_rows_data: # Es una lista de dicts
+            if isinstance(selected_rows_data, list) and selected_rows_data:
                 try:
                     first_selected_row_dict = selected_rows_data[0]
                     if isinstance(first_selected_row_dict, dict):
@@ -393,7 +429,7 @@ elif not is_initial_unfiltered_load:
                             st.session_state.selected_card_id_from_grid = newly_selected_id
                             st.rerun()
                 except Exception as e_ag: logger.error(f"AGGRID_HANDLER_ERR: {e_ag}", exc_info=True)
-            elif isinstance(selected_rows_data, pd.DataFrame) and not selected_rows_data.empty: # Por si acaso devuelve DF
+            elif isinstance(selected_rows_data, pd.DataFrame) and not selected_rows_data.empty:
                 try:
                     newly_selected_id = selected_rows_data.iloc[0]['ID']
                     current_id = st.session_state.get('selected_card_id_from_grid')
@@ -401,7 +437,6 @@ elif not is_initial_unfiltered_load:
                         st.session_state.selected_card_id_from_grid = newly_selected_id
                         st.rerun()
                 except Exception as e_ag_df: logger.error(f"AGGRID_HANDLER_DF_ERR: {e_ag_df}", exc_info=True)
-            # --- FIN CORRECCIÓN ---
     else: st.info("No hay cartas que coincidan con los filtros aplicados.")
 
 # --- Sección de Detalle de Carta Seleccionada y Predicción ---
