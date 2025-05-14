@@ -7,7 +7,7 @@ import logging
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import numpy as np
 import os
-# import tensorflow as tf # Comentado si solo usas LGBM
+# import tensorflow as tf # Comentado si solo usas LGBM, si usas MLP descomenta
 import joblib
 import typing
 import random
@@ -21,8 +21,8 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
-# logger.info(f"TensorFlow Version: {tf.__version__}") # Comentado
-# logger.info(f"Keras Version (via TF): {tf.keras.__version__}") # Comentado
+# logger.info(f"TensorFlow Version: {tf.__version__}")
+# logger.info(f"Keras Version (via TF): {tf.keras.__version__}")
 
 
 # --- Constantes y Configuración de GCP ---
@@ -156,7 +156,6 @@ def get_true_base_name(name_str, supertype, suffixes, multi_word_bases):
 
 @st.cache_data(ttl=3600)
 def get_card_metadata_with_base_names(_client: bigquery.Client) -> pd.DataFrame:
-    # Query para metadatos, usando nombres de columna reales de BQ y aplicando alias
     query = f"""
     SELECT
         id,
@@ -217,19 +216,28 @@ def fetch_card_data_from_bq(
     if not list_of_card_ids_to_query: logger.info("FETCH_BQ_DATA: Lista IDs vacía."); return pd.DataFrame()
 
     snapshot_date_str_for_query = snapshot_date_param.strftime('%Y-%m-%d')
+    # CORRECCIÓN APLICADA: Usar meta.name y meta.artist, y prices.id
     query_sql_template = f"""
     SELECT
-        meta.id, meta.pokemon_name, meta.supertype, meta.subtypes, meta.types,
-        meta.set_name, meta.rarity, meta.artist_name, meta.image_url, -- Usar los alias de meta
-        meta.cardmarket_url, meta.tcgplayer_url,
-        prices.cm_averageSellPrice AS precio, -- Nombre real en tabla prices
+        meta.id,
+        meta.name AS pokemon_name,
+        meta.supertype,
+        meta.subtypes,
+        meta.types,
+        meta.set_name,
+        meta.rarity,
+        meta.artist AS artist_name,
+        meta.images_large AS image_url,
+        meta.cardmarket_url,
+        meta.tcgplayer_url,
+        prices.cm_averageSellPrice AS precio,
         prices.cm_trendPrice,
         prices.cm_avg1,
         prices.cm_avg7,
         prices.cm_avg30,
         DATE('{snapshot_date_str_for_query}') AS fecha_snapshot
     FROM `{CARD_METADATA_TABLE}` AS meta
-    LEFT JOIN `{latest_table_path_param}` AS prices ON meta.id = prices.id -- Asume que tabla prices usa 'id'
+    LEFT JOIN `{latest_table_path_param}` AS prices ON meta.id = prices.id -- Usar 'id' de la tabla prices
     WHERE meta.id IN UNNEST(@card_ids_param)
     ORDER BY prices.cm_averageSellPrice {sort_direction}
     """
@@ -253,15 +261,14 @@ def fetch_card_data_from_bq(
 # --- FUNCIÓN DE PREDICCIÓN CON MODELOS LGBM ---
 def predict_price_with_lgbm_pipelines_app(
     pipe_low_lgbm_loaded, pipe_high_lgbm_loaded, threshold_lgbm_value: float,
-    card_data_for_prediction: pd.Series # Fila de results_df
-) -> tuple[float | None, str | None]: # Devuelve predicción y qué pipeline se usó
+    card_data_for_prediction: pd.Series
+) -> tuple[float | None, str | None]:
     logger.info(f"LGBM_PRED_APP: Iniciando predicción para carta ID: {card_data_for_prediction.get('id', 'N/A')}")
     model_type_used = None
     if not pipe_low_lgbm_loaded or not pipe_high_lgbm_loaded or threshold_lgbm_value is None:
         logger.error("LGBM_PRED_APP: Pipelines LGBM o umbral no cargados.")
         st.error("Error Interno: Modelos LGBM o umbral no disponibles.")
         return None, model_type_used
-
     try:
         input_dict = {}
         current_price_val = card_data_for_prediction.get('precio')
@@ -388,7 +395,7 @@ if is_initial_unfiltered_load and not all_card_metadata_df.empty:
 elif not is_initial_unfiltered_load:
     st.header("Resultados de Cartas")
     results_df_for_aggrid_display = results_df
-    if len(results_df) > MAX_ROWS_NO_FILTER and is_initial_unfiltered_load :
+    if len(results_df) > MAX_ROWS_NO_FILTER and is_initial_unfiltered_load : # Este is_initial_unfiltered_load aquí podría ser redundante
         st.info(f"Mostrando los primeros {MAX_ROWS_NO_FILTER} de {len(results_df)} resultados. Aplica filtros.")
         results_df_for_aggrid_display = results_df.head(MAX_ROWS_NO_FILTER)
     if not results_df_for_aggrid_display.empty:
@@ -404,7 +411,7 @@ elif not is_initial_unfiltered_load:
         gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25)
         gridOptions = gb.build()
         st.write("Haz clic en una fila de la tabla para ver sus detalles:")
-        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_v1_12') # Nueva key
+        grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_v1_12')
         if grid_response:
             selected_rows_data = grid_response.get('selected_rows')
             if selected_rows_data and not selected_rows_data.empty:
@@ -456,24 +463,36 @@ if st.session_state.selected_card_id_from_grid is not None:
             st.markdown("---"); st.subheader("Predicción de Precio (Modelo LGBM Estimado)")
             
             if pipe_low_lgbm_app and pipe_high_lgbm_app and threshold_lgbm_app is not None:
-                # Verificar si todas las columnas necesarias para la predicción LGBM están presentes Y no son NaN
-                required_lgbm_cols_for_pred_button = ['precio', _LGBM_THRESHOLD_COLUMN_APP] + _LGBM_ALL_FEATURES_APP
-                can_predict_lgbm = all(col in card_to_display_in_detail_section and pd.notna(card_to_display_in_detail_section[col]) for col in required_lgbm_cols_for_pred_button)
+                # Verificar si TODAS las columnas necesarias para la predicción LGBM están presentes Y no son NaN
+                # en la carta seleccionada para el detalle.
+                required_cols_for_lgbm_pred = _LGBM_ALL_FEATURES_APP + [_LGBM_THRESHOLD_COLUMN_APP] # Añadimos la columna del threshold
+                # Asegurar que la columna 'precio' (usada para 'prev_price') también esté
+                if 'precio' not in required_cols_for_lgbm_pred: required_cols_for_lgbm_pred.append('precio')
+                
+                # Eliminar duplicados por si acaso
+                required_cols_for_lgbm_pred = list(set(required_cols_for_lgbm_pred))
+
+                can_predict_lgbm = all(
+                    col in card_to_display_in_detail_section and \
+                    pd.notna(card_to_display_in_detail_section[col]) for col in required_cols_for_lgbm_pred
+                )
                 
                 if can_predict_lgbm:
                      if st.button("⚡ Estimar Precio Actual (LGBM)", key=f"predict_lgbm_btn_{card_to_display_in_detail_section.get('id')}"):
                          with st.spinner("Calculando estimación (LGBM)..."):
-                             pred_price, pipeline_used = predict_price_with_lgbm_pipelines_app( # Capturar pipeline_used
+                             pred_price, pipeline_used = predict_price_with_lgbm_pipelines_app(
                                  pipe_low_lgbm_app, pipe_high_lgbm_app, threshold_lgbm_app,
                                  card_to_display_in_detail_section
                              )
-                         if pred_price is not None:
+                         if pred_price is not None and card_price_actual_render is not None: # Solo mostrar delta si hay precio actual
                              delta = pred_price - card_price_actual_render
                              delta_color = "normal" if delta < -0.01 else ("inverse" if delta > 0.01 else "off")
                              st.metric(label=f"Precio Justo Estimado ({pipeline_used})", value=f"€{pred_price:.2f}", delta=f"{delta:+.2f}€ vs Actual", delta_color=delta_color)
+                         elif pred_price is not None: # Si hay predicción pero no precio actual para comparar
+                              st.metric(label=f"Precio Justo Estimado ({pipeline_used})", value=f"€{pred_price:.2f}")
                          else: st.warning("No se pudo obtener estimación (LGBM).")
                 else:
-                     missing_pred_cols = [col for col in required_lgbm_cols_for_pred_button if col not in card_to_display_in_detail_section or pd.isna(card_to_display_in_detail_section[col])]
+                     missing_pred_cols = [col for col in required_cols_for_lgbm_pred if col not in card_to_display_in_detail_section or pd.isna(card_to_display_in_detail_section[col])]
                      st.info(f"Datos insuficientes para estimación LGBM (faltan o son NaN: {missing_pred_cols}).")
             else: st.warning("Modelos LGBM o umbral no cargados.")
 else:
@@ -483,4 +502,4 @@ else:
         else: st.info("No se encontraron cartas destacadas ni otros resultados iniciales.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Pokémon TCG Explorer v1.12 | LGBM")
+st.sidebar.caption(f"Pokémon TCG Explorer v1.13 | LGBM")
