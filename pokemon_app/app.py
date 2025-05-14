@@ -382,10 +382,26 @@ elif not is_initial_unfiltered_load:
         grid_response = AgGrid( final_display_df_aggrid, gridOptions=gridOptions, height=500, width='100%', data_return_mode=DataReturnMode.AS_INPUT, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=False, allow_unsafe_jscode=True, key='pokemon_aggrid_main_display_v1_13')
         if grid_response:
             selected_rows_data = grid_response.get('selected_rows')
-            if selected_rows_data and not selected_rows_data.empty:
-                newly_selected_id = selected_rows_data.iloc[0]['ID']
-                if newly_selected_id != st.session_state.selected_card_id_from_grid:
-                    st.session_state.selected_card_id_from_grid = newly_selected_id; st.rerun()
+            # --- CORRECCIÓN EN MANEJO DE CLIC DE AGGRID ---
+            if isinstance(selected_rows_data, list) and selected_rows_data: # Es una lista de dicts
+                try:
+                    first_selected_row_dict = selected_rows_data[0]
+                    if isinstance(first_selected_row_dict, dict):
+                        newly_selected_id = first_selected_row_dict.get('ID')
+                        current_id = st.session_state.get('selected_card_id_from_grid')
+                        if newly_selected_id is not None and newly_selected_id != current_id:
+                            st.session_state.selected_card_id_from_grid = newly_selected_id
+                            st.rerun()
+                except Exception as e_ag: logger.error(f"AGGRID_HANDLER_ERR: {e_ag}", exc_info=True)
+            elif isinstance(selected_rows_data, pd.DataFrame) and not selected_rows_data.empty: # Por si acaso devuelve DF
+                try:
+                    newly_selected_id = selected_rows_data.iloc[0]['ID']
+                    current_id = st.session_state.get('selected_card_id_from_grid')
+                    if newly_selected_id is not None and newly_selected_id != current_id:
+                        st.session_state.selected_card_id_from_grid = newly_selected_id
+                        st.rerun()
+                except Exception as e_ag_df: logger.error(f"AGGRID_HANDLER_DF_ERR: {e_ag_df}", exc_info=True)
+            # --- FIN CORRECCIÓN ---
     else: st.info("No hay cartas que coincidan con los filtros aplicados.")
 
 # --- Sección de Detalle de Carta Seleccionada y Predicción ---
