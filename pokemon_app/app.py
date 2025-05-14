@@ -578,15 +578,71 @@ if st.session_state.selected_card_id_from_grid is not None:
              if pd.notna(price_check): card_price_actual_render = price_check;
         cardmarket_url_render = card_to_display_in_detail_section.get('cardmarket_url', None)
         tcgplayer_url_render = card_to_display_in_detail_section.get('tcgplayer_url', None)
+        
         col_img, col_info = st.columns([1, 2])
+        
         with col_img:
             if pd.notna(card_image_url_render): st.image(card_image_url_render, caption=f"{card_name_render} ({card_set_render})", width=300)
             else: st.warning("Imagen no disponible.")
-            links_html = []
-            if pd.notna(cardmarket_url_render) and cardmarket_url_render.startswith("http"): links_html.append(f"<a href='{cardmarket_url_render}' target='_blank' style='...'>Cardmarket</a>")
-            if pd.notna(tcgplayer_url_render) and tcgplayer_url_render.startswith("http"): links_html.append(f"<a href='{tcgplayer_url_render}' target='_blank' style='...'>TCGplayer</a>")
-            if links_html: st.markdown(" ".join(links_html), unsafe_allow_html=True)
-            else: st.caption("Links no disponibles.")
+            
+            # --- MODIFICACIÓN PARA LINKS ESTILIZADOS ---
+            links_html_parts = []
+            
+            # Estilo CSS para los botones de enlace
+            link_button_style = """
+                display: inline-block; 
+                padding: 8px 15px; 
+                margin: 5px 5px 5px 0; 
+                border: 1px solid #ddd; 
+                border-radius: 5px; 
+                background-color: #f8f9fa; 
+                color: #007bff; 
+                text-decoration: none; 
+                font-weight: 500;
+                text-align: center;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                transition: all 0.2s ease-in-out;
+            """
+            link_button_hover_style = "{background-color: #e2e6ea; color: #0056b3; text-decoration: none;}"
+
+            # Estilo para el contenedor de los links (si quieres que estén uno al lado del otro o apilados)
+            # Aquí usamos flex para que se alineen bien.
+            links_container_html_start = "<div style='display: flex; flex-wrap: wrap; justify-content: flex-start; margin-top: 10px;'>"
+            links_container_html_end = "</div>"
+
+            if pd.notna(cardmarket_url_render) and cardmarket_url_render.startswith("http"):
+                # Aplicar estilo hover con un truco simple de CSS inline para onmouseover y onmouseout si es necesario o simplificarlo.
+                # Streamlit no soporta directamente :hover en st.markdown tan fácilmente.
+                # Optaremos por un estilo base sólido y agradable.
+                cardmarket_link_html = f"""
+                <a href='{cardmarket_url_render}' target='_blank' 
+                   style='{link_button_style}'
+                   onmouseover="this.style.backgroundColor='#e9ecef'; this.style.borderColor='#adb5bd';"
+                   onmouseout="this.style.backgroundColor='#f8f9fa'; this.style.borderColor='#ddd';"
+                >
+                    Ver en Cardmarket
+                </a>"""
+                links_html_parts.append(cardmarket_link_html)
+
+            if pd.notna(tcgplayer_url_render) and tcgplayer_url_render.startswith("http"):
+                tcgplayer_link_html = f"""
+                <a href='{tcgplayer_url_render}' target='_blank' 
+                   style='{link_button_style}'
+                   onmouseover="this.style.backgroundColor='#e9ecef'; this.style.borderColor='#adb5bd';"
+                   onmouseout="this.style.backgroundColor='#f8f9fa'; this.style.borderColor='#ddd';"
+                >
+                    Ver en TCGplayer
+                </a>"""
+                links_html_parts.append(tcgplayer_link_html)
+
+            if links_html_parts:
+                st.markdown(links_container_html_start + "".join(links_html_parts) + links_container_html_end, unsafe_allow_html=True)
+            else:
+                # No mostrar nada si no hay links
+                # st.caption("Links de compra no disponibles.") # Opcional: mantener este mensaje
+                pass 
+            # --- FIN DE MODIFICACIÓN PARA LINKS ESTILIZADOS ---
+
         with col_info:
             st.subheader(f"{card_name_render}")
             st.markdown(f"**ID:** `{card_id_render}`"); st.markdown(f"**Categoría:** {card_supertype_render}"); st.markdown(f"**Set:** {card_set_render}"); st.markdown(f"**Rareza:** {card_rarity_render}")
@@ -613,36 +669,23 @@ if st.session_state.selected_card_id_from_grid is not None:
 
             # Botón de Predicción LGBM
             if lgbm_pipeline_high or lgbm_pipeline_low: # Chequear si al menos uno está cargado
-                # Comprobar si tenemos los datos necesarios para LGBM
-                # LGBM espera 'pokemon_name' y 'artist_name' en sus features.
-                # En card_to_display_in_detail_section, estos datos están en 'name' y 'artist'.
-                # La función predict_price_with_lgbm_pipelines_app maneja este mapeo.
-                # Aquí solo necesitamos asegurarnos de que 'name' y 'artist' existen,
-                # y que las otras columnas directas (prev_price, cm_avg7, etc.) están presentes.
                 required_lgbm_button_cols = ['name', 'artist', 'price', _LGBM_THRESHOLD_COLUMN_APP] + \
                                             [col for col in _LGBM_CAT_FEATURES_INPUT if col not in ['pokemon_name', 'artist_name']] + \
-                                            [col for col in _LGBM_NUM_FEATURES_INPUT if col != 'prev_price'] # 'price' se usa para 'prev_price'
+                                            [col for col in _LGBM_NUM_FEATURES_INPUT if col != 'prev_price'] 
 
                 required_lgbm_button_cols = list(set(required_lgbm_button_cols))
-
 
                 can_predict_lgbm = all(
                     col in card_to_display_in_detail_section.index and \
                     pd.notna(card_to_display_in_detail_section.get(col)) for col in required_lgbm_button_cols
                 )
                 
-                # Adicionalmente, chequear específicamente 'days_since_prev_snapshot' que puede estar en 'results_df' pero no 'all_card_metadata_df'
-                # y que la función de predicción asigna un default si no está. Aquí lo chequearemos explícitamente por consistencia de botón.
                 if 'days_since_prev_snapshot' not in card_to_display_in_detail_section.index or pd.isna(card_to_display_in_detail_section.get('days_since_prev_snapshot')):
-                     # Para el botón, consideraremos que no se puede si no está explícitamente.
-                     # La función de predicción le pone un default si no existe, pero aquí nos interesa si los datos *originales* son suficientes
-                     #logger.info("LGBM_BTN_CHECK: 'days_since_prev_snapshot' no encontrado o NaN, predicción posible con default pero botón podría ocultarse.")
-                     pass # Dejar que el all() decida si se oculta
+                     pass 
 
                 if can_predict_lgbm:
                      if st.button("⚖️ Calcular Precio Justo (LGBM)", key=f"predict_lgbm_btn_{card_id_render}"):
                          with st.spinner("Calculando precio justo (LGBM)..."):
-                             # Los pipelines cargados se llaman lgbm_pipeline_low y lgbm_pipeline_high
                              pred_price_lgbm, pipeline_lgbm_used = predict_price_with_lgbm_pipelines_app(
                                  lgbm_pipeline_low, lgbm_pipeline_high, lgbm_threshold_value,
                                  card_to_display_in_detail_section
