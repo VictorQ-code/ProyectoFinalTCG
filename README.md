@@ -161,5 +161,6 @@ Esto abrirá la app en tu navegador.
 Este proyecto está licenciado bajo [MIT/Apache 2.0]. Consulta el archivo `LICENSE`.
 
 ---
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/VictorQ-code/Pokemon_TCG_Price_Predictor)
 🚀 Proyecto realizado como parte del Máster en Inteligencia Artificial - Curso 2024/2025
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/VictorQ-code/Pokemon_TCG_Price_Predictor)
+
