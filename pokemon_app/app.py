@@ -98,10 +98,25 @@ if bq_client is None: st.stop()
 # ... (Pega aquí la carga de todos los modelos de la v1.19/v1.20)
 
 # --- FUNCIONES UTILITARIAS DE DATOS ---
+# --- FUNCIONES UTILITARIAS DE DATOS ---
 @st.cache_data(ttl=3600)
 def get_latest_snapshot_info(_client: bigquery.Client) -> tuple[str | None, pd.Timestamp | None]:
-    # ... (código sin cambios)
-    pass # Implementación de v1.19
+    query = f"SELECT table_id FROM `{_client.project}.{BIGQUERY_DATASET}`.__TABLES__ WHERE STARTS_WITH(table_id, 'monthly_') ORDER BY table_id DESC LIMIT 1"
+    try:
+        results = _client.query(query).result()
+        if results.total_rows > 0:
+            latest_table_id_str = list(results)[0].table_id
+            full_table_path = f"{_client.project}.{BIGQUERY_DATASET}.{latest_table_id_str}"
+            date_str_from_suffix = latest_table_id_str.replace("monthly_", "")
+            snapshot_date = pd.to_datetime(date_str_from_suffix, format='%Y_%m_%d')
+            logger.info(f"SNAPSHOT_INFO: Usando tabla: {full_table_path}, Fecha Snapshot: {snapshot_date.date()}")
+            return full_table_path, snapshot_date
+        logger.warning("SNAPSHOT_TABLE: No se encontraron tablas snapshot 'monthly_...'.")
+        return None, None # Correcto: devuelve tupla si no hay resultados
+    except Exception as e:
+        logger.error(f"SNAPSHOT_TABLE: Error buscando tabla snapshot: {e}", exc_info=True)
+        st.error(f"Error crítico al obtener información del último snapshot: {e}") # Informar al usuario
+        return None, None # <-- AÑADIR ESTE RETURN PARA MANEJAR LA EXCEPCIÓN
 
 POKEMON_SUFFIXES_TO_REMOVE = [' VMAX', ' VSTAR', ' V-UNION', ' V', ' GX', ' EX', ' BREAK', ' Prism Star', ' Star', ' Radiant', ' δ', ' Tag Team', ' & ', ' Light', ' Dark', ' ◇', ' ☆']
 MULTI_WORD_BASE_NAMES = ["Mr. Mime", "Mime Jr.", "Farfetch'd", "Sirfetch'd", "Ho-Oh", "Porygon-Z", "Type: Null", "Tapu Koko", "Tapu Lele", "Tapu Bulu", "Tapu Fini", "Mr. Rime", "Indeedee M", "Indeedee F", "Great Tusk", "Iron Treads"]
