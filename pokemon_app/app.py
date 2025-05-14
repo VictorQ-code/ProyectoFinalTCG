@@ -56,7 +56,7 @@ THRESHOLD_LGBM_PATH = os.path.join(LGBM_MODEL_DIR, THRESHOLD_JSON_FILENAME)
 
 # --- CONFIGURACIÓN DE FEATURES PARA LGBM ---
 _LGBM_NUMERIC_FEATURES_APP = ['prev_price', 'days_since_prev_snapshot', 'cm_avg1', 'cm_avg7', 'cm_avg30', 'cm_trendPrice']
-_LGBM_CATEGORICAL_FEATURES_APP = ['artist_name', 'pokemon_name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
+_LGBM_CATEGORICAL_FEATURES_APP = ['artist', 'name', 'rarity', 'set_name', 'types', 'supertype', 'subtypes']
 _LGBM_ALL_FEATURES_APP = _LGBM_NUMERIC_FEATURES_APP + _LGBM_CATEGORICAL_FEATURES_APP
 _LGBM_THRESHOLD_COLUMN_APP = 'cm_avg7'
 _LGBM_TARGET_IS_LOG_TRANSFORMED = True
@@ -198,8 +198,8 @@ def fetch_card_data_from_bq(
     snapshot_date_str_for_query = snapshot_date_param.strftime('%Y-%m-%d')
     query_sql_template = f"""
     SELECT
-        meta.id, meta.pokemon_name, meta.supertype, meta.subtypes, meta.types,
-        meta.set_name, meta.rarity, meta.artist_name, meta.image_url,
+        meta.id, meta.name, meta.supertype, meta.subtypes, meta.types,
+        meta.set_name, meta.rarity, meta.artist, meta.image_url,
         meta.cardmarket_url, meta.tcgplayer_url,
         prices.cm_averageSellPrice AS precio, prices.cm_trendPrice,
         prices.cm_avg1, prices.cm_avg7, prices.cm_avg30,
