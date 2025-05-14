@@ -142,6 +142,8 @@ Este proyecto sienta las bases para futuras mejoras y expansiones significativas
 *   **Mejora Continua del Pipeline de Preprocesamiento:** Refinar el tratamiento de datos faltantes, valores inconsistentes (especialmente en campos como `types` y `subtypes`), y explorar técnicas de ingeniería de características más avanzadas a medida que se disponga de más datos y se desarrollen modelos más complejos.
 *   **Escalabilidad y Optimización del Despliegue:** Evaluar la necesidad de migrar componentes del sistema (como la carga de modelos) a soluciones más robustas y escalables (ej. TensorFlow Serving, Vertex AI Endpoints) si la carga de usuarios o el tamaño de los modelos aumentan, optimizando el rendimiento y la latencia.
 *   **Exploración de Factores de Precio Adicionales:** Investigar la posibilidad de incorporar otras fuentes de datos o características que podrían influir en el precio, como la popularidad online del Pokémon, su relevancia en el juego competitivo (TCG), anuncios oficiales, eventos comunitarios, etc.
+*   **Segmentación Avanzada y Análisis de Cartas de Alto Valor:**
+Explorar la creación de un segmento específico para cartas de muy alto valor económico (Ultra-High Tier), utilizando umbrales superiores (ej. >500 €), con el objetivo de desarrollar modelos diferenciados o enfoques analíticos más adecuados a sus características particulares.
 ---
 
 
